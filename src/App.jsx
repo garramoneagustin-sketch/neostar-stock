@@ -39,7 +39,6 @@ const BRANDS = ['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Hond
 const LOCATIONS = ['Depo Central', 'Depósito Santa Fe', 'Punto de entrega'];
 
 const emptyItem = {
-  id: null,
   name: '',
   sku: '',
   kind: 'consumible',
@@ -65,6 +64,7 @@ const emptyMove = {
   reason_type: 'operativo',
   reason_detail: '',
   recipient_last_name: '',
+  vehicle_plate: '',
   notes: ''
 };
 
@@ -141,7 +141,7 @@ export default function App() {
 
   function openEditItem(item) {
     setEditingItem(item.id);
-    setForm({ ...emptyItem, ...item });
+    setForm({ ...item });
     setShowItemModal(true);
   }
 
@@ -149,28 +149,36 @@ export default function App() {
     e.preventDefault();
     setError('');
 
+    if (!form.name.trim()) {
+      setError('El nombre del material es obligatorio.');
+      return;
+    }
+
     const payload = {
-      ...form,
       name: form.name.trim(),
-      sku: form.sku.trim(),
+      sku: form.sku.trim() || null,
       stock_nucleo: Number(form.stock_nucleo) || 0,
       stock_sf: Number(form.stock_sf) || 0,
       reorder_nucleo: Number(form.reorder_nucleo) || 0,
       reorder_sf: Number(form.reorder_sf) || 0,
       lead_time_days: Number(form.lead_time_days) || 0,
-      total_qty: Number(form.total_qty) || 0,
       category: form.category || 'Otros',
+      subcategory: form.subcategory || '',
       brand: form.brand || 'Genérico',
+      kind: form.kind || 'consumible',
+      occasion: form.occasion || '',
       scope: form.scope || 'generico'
     };
 
-    const queryAction = editingItem
-      ? supabase.from('items').update(payload).eq('id', editingItem)
-      : supabase.from('items').insert(payload);
+    let result;
+    if (editingItem) {
+      result = await supabase.from('items').update(payload).eq('id', editingItem);
+    } else {
+      result = await supabase.from('items').insert([payload]);
+    }
 
-    const { error: saveError } = await queryAction;
-    if (saveError) {
-      setError(saveError.message);
+    if (result.error) {
+      setError(result.error.message);
       return;
     }
 
@@ -199,9 +207,15 @@ export default function App() {
       return;
     }
 
-    if (move.reason_type === 'incidencia_cliente' && !move.recipient_last_name.trim()) {
-      setError('Para incidencias con cliente, el apellido es obligatorio.');
-      return;
+    if (move.reason_type === 'incidencia_cliente') {
+      if (!move.recipient_last_name.trim()) {
+        setError('Para incidencias con cliente, el apellido es obligatorio.');
+        return;
+      }
+      if (!move.vehicle_plate.trim()) {
+        setError('Para incidencias con cliente, la patente del vehículo es obligatoria.');
+        return;
+      }
     }
 
     const payload = {
@@ -212,7 +226,8 @@ export default function App() {
       p_person: session?.user?.email || 'usuario',
       p_reason_type: move.reason_type,
       p_reason_detail: move.reason_detail.trim(),
-      p_recipient_last_name: move.recipient_last_name.trim(),
+      p_recipient_last_name: move.recipient_last_name.trim() || null,
+      p_vehicle_plate: move.vehicle_plate.trim() || null,
       p_origin: move.origin,
       p_destination: move.destination || null
     };
@@ -537,7 +552,7 @@ function MovementTable({ rows, onNew }) {
       <div className="card-head">
         <div>
           <h2>Historial de movimientos</h2>
-          <p className="muted">Cada retiro debe especificar un motivo y, si corresponde, apellido del cliente.</p>
+          <p className="muted">Cada retiro debe especificar un motivo y, si corresponde, apellido del cliente y patente.</p>
         </div>
         <button className="primary-btn" onClick={onNew}>+ Registrar retiro</button>
       </div>
@@ -547,10 +562,10 @@ function MovementTable({ rows, onNew }) {
           <tr>
             <th>Fecha</th>
             <th>Material</th>
-            <th>Tipo</th>
             <th>Cantidad</th>
             <th>Motivo</th>
-            <th>Responsable</th>
+            <th>Cliente</th>
+            <th>Patente</th>
           </tr>
         </thead>
         <tbody>
@@ -558,13 +573,12 @@ function MovementTable({ rows, onNew }) {
             <tr key={row.id}>
               <td>{new Date(row.created_at).toLocaleDateString('es-AR')}</td>
               <td>{row.items?.name || row.item_id}</td>
-              <td>{row.type}</td>
               <td>{row.qty}</td>
               <td>
                 {row.reason_detail || 'Sin detalle'}
-                {row.recipient_last_name && <small>Cliente: {row.recipient_last_name}</small>}
               </td>
-              <td>{row.person || '—'}</td>
+              <td>{row.recipient_last_name || '—'}</td>
+              <td>{row.vehicle_plate || '—'}</td>
             </tr>
           ))}
         </tbody>
@@ -614,7 +628,7 @@ function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
 
         <div className="form-grid">
           <label>
-            Nombre
+            Nombre *
             <input required value={form.name} onChange={(e) => set('name', e.target.value)} />
           </label>
 
@@ -697,6 +711,7 @@ function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
 
 function MovementModal({ move, setMove, items, destinations, onClose, onSubmit }) {
   const set = (key, value) => setMove((prev) => ({ ...prev, [key]: value }));
+  const esIncidencia = move.reason_type === 'incidencia_cliente';
 
   return (
     <div className="modal-overlay">
@@ -708,8 +723,8 @@ function MovementModal({ move, setMove, items, destinations, onClose, onSubmit }
 
         <div className="form-grid">
           <label>
-            Material
-            <select value={move.item_id} onChange={(e) => set('item_id', e.target.value)}>
+            Material *
+            <select required value={move.item_id} onChange={(e) => set('item_id', e.target.value)}>
               <option value="">Seleccionar</option>
               {items.map((item) => (
                 <option key={item.id} value={item.id}>{item.name} · {item.brand || 'Genérico'}</option>
@@ -718,8 +733,8 @@ function MovementModal({ move, setMove, items, destinations, onClose, onSubmit }
           </label>
 
           <label>
-            Cantidad
-            <input type="number" min="1" value={move.qty} onChange={(e) => set('qty', e.target.value)} />
+            Cantidad *
+            <input type="number" min="1" required value={move.qty} onChange={(e) => set('qty', e.target.value)} />
           </label>
 
           <label>
@@ -742,8 +757,8 @@ function MovementModal({ move, setMove, items, destinations, onClose, onSubmit }
           </label>
 
           <label>
-            Motivo
-            <select value={move.reason_type} onChange={(e) => set('reason_type', e.target.value)}>
+            Motivo *
+            <select required value={move.reason_type} onChange={(e) => set('reason_type', e.target.value)}>
               <option value="operativo">Operativo / reposición</option>
               <option value="incidencia_cliente">Incidencia con cliente</option>
               <option value="regalo_especial">Regalo corporativo o especial</option>
@@ -753,28 +768,43 @@ function MovementModal({ move, setMove, items, destinations, onClose, onSubmit }
             </select>
           </label>
 
-          <label>
-            Apellido del cliente
-            <input
-              value={move.recipient_last_name}
-              placeholder={move.reason_type === 'incidencia_cliente' ? 'Apellido obligatorio' : 'Si corresponde'}
-              onChange={(e) => set('recipient_last_name', e.target.value)}
-            />
-          </label>
+          {esIncidencia && (
+            <>
+              <label>
+                Apellido del cliente *
+                <input
+                  required
+                  value={move.recipient_last_name}
+                  onChange={(e) => set('recipient_last_name', e.target.value)}
+                  placeholder="García, López, etc."
+                />
+              </label>
+
+              <label>
+                Patente del vehículo *
+                <input
+                  required
+                  value={move.vehicle_plate}
+                  onChange={(e) => set('vehicle_plate', e.target.value.toUpperCase())}
+                  placeholder="ABC123, XYZ456"
+                />
+              </label>
+            </>
+          )}
 
           <label className="full-width">
-            Descripción del motivo
+            Descripción del motivo *
             <input
               required
               value={move.reason_detail}
               onChange={(e) => set('reason_detail', e.target.value)}
-              placeholder="Ej.: Regalo futbolista Central retira BYD"
+              placeholder={esIncidencia ? "Ej.: Defecto en entrega, cliente reportó falla" : "Ej.: Regalo futbolista Central retira BYD"}
             />
           </label>
 
           <label className="full-width">
             Notas
-            <textarea value={move.notes} onChange={(e) => set('notes', e.target.value)} />
+            <textarea value={move.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Información adicional (opcional)" />
           </label>
         </div>
 
