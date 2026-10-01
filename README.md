@@ -1,17 +1,39 @@
-# Neostar Stock
+# NEOSTAR STOCK - Sistema de Gestión de Inventario
 
-Aplicación multiusuario para inventario de merchandising multimarca.
+## Características
 
-## Clasificación
-Los materiales se clasifican por **macrocategoría + subcategoría + marca + SKU**. Las marcas son atributos filtrables: Kia, Jeep, RAM, Nissan, BYD, Suzuki, Subaru, Honda y Neostar.
+### Flujos principales
 
-## Registro de retiros
-Todo retiro exige un detalle. Los motivos disponibles incluyen operación/reposición, incidencia con cliente, regalo corporativo o especial, visita importante y evento. Para una incidencia con cliente el apellido es obligatorio. Ejemplos: “Regalo futbolista Central retira BYD” o “Presente por visita corporativa directores Nissan”.
+**INGRESOS:** Recompra a proveedores, devoluciones, ajustes. Suma stock a Depo Central.
 
-## Puesta en marcha
-1. Ejecutar `supabase/schema.sql` si todavía no se hizo.
-2. Ejecutar `supabase/upgrade.sql` en Supabase SQL Editor.
-3. Confirmar en Vercel que las variables `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` estén configuradas.
-4. Cada push a `main` dispara un nuevo deployment.
+**RETIROS/USO:** Regalos corporativos, incidencias, uso interno. Resta stock.
 
-La interfaz incluye login, dashboard, alertas, CRUD de materiales con búsqueda y filtros, puntos de entrega y registro/historial de retiros.
+**MOVIMIENTOS:** Envíos a Santa Fe, Cañada, Funes, Concesionarios. Resta de Central, suma en destino.
+
+**EVENTOS:** Activaciones con remito de salida (Marketing firmando) y remito de llegada. Control de devoluciones.
+
+### Seguridad
+
+- Cada retiro de cliente requiere: apellido + patente
+- Eventos requieren firma de Marketing en remitos
+- Auditoría completa: quién, qué, cuándo
+
+### Integración futura
+
+- [ ] API de Trello para eventos programados
+- [ ] Reportes automáticos
+- [ ] Alertas por email
+- [ ] Exportación a Excel
+
+## Cómo usar
+
+1. **Ejecutar SQL:** `supabase/schema-complete.sql`
+2. **Deploy:** Push a main, Vercel despliega automáticamente
+3. **Login:** Usar credenciales Supabase
+4. **Comenzar:** Dashboard → Ingresos/Retiros/Movimientos/Eventos
+
+## URLs
+
+- **App:** https://neostar-stock-3v1g.vercel.app
+- **Supabase:** https://supabase.com
+- **GitHub:** garramoneagustin-sketch/neostar-stock
