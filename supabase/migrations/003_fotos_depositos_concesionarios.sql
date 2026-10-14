@@ -13,10 +13,11 @@ update public.destinations set is_depot = true, name = 'DEPOSITO MARKETING SANTA
 
 -- 3) Envíos: a un concesionario se registran directo (descuenta del central y suma a lo que tiene);
 --    a un depósito siguen "en camino" hasta que lo reciban y controlen.
+-- 3) Envíos: todos quedan «en camino»; a un concesionario lo marca como recibido el equipo cuando el concesionario avisa.
 create or replace function public.create_shipment(p_destination_id uuid, p_items jsonb,
   p_recipient_name text default null, p_notes text default null)
 returns public.shipments language plpgsql security definer set search_path = public as $$
-declare s public.shipments; d public.destinations; l record; direct boolean;
+declare s public.shipments; d public.destinations; l record;
 begin
   perform public._require_staff();
   select * into d from public.destinations where id = p_destination_id;
@@ -24,14 +25,9 @@ begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Agregá al menos un material al envío';
   end if;
-  direct := not d.is_depot;
   perform set_config('app.stock_rpc','on',true);
-  insert into public.shipments(destination_id, destination_name, recipient_name, notes, created_by, created_by_name,
-                               status, received_by, received_by_name, received_at, reviewed)
-  values (p_destination_id, d.name, nullif(trim(p_recipient_name),''), nullif(trim(p_notes),''), auth.uid(), public.app_person(),
-          case when direct then 'recibido' else 'en_transito' end,
-          case when direct then auth.uid() end, case when direct then public.app_person() end,
-          case when direct then now() end, direct)
+  insert into public.shipments(destination_id, destination_name, recipient_name, notes, created_by, created_by_name)
+  values (p_destination_id, d.name, nullif(trim(p_recipient_name),''), nullif(trim(p_notes),''), auth.uid(), public.app_person())
   returning * into s;
   for l in
     select (e->>'item_id')::uuid as item_id, sum((e->>'qty')::integer) as qty
@@ -44,15 +40,9 @@ begin
       raise exception 'Stock insuficiente en DEPOSITO MARKETING ROSARIO para "%"', coalesce((select name from public.items where id = l.item_id), 'material inexistente');
     end if;
     insert into public.movements(item_id, type, qty, fecha, origen, destino_id, destination, estado,
-                                 recipient_name, person, created_by, notes, shipment_id, qty_received, reception_ok)
-    values (l.item_id, 'envio_destino', l.qty, current_date, 'DEPOSITO MARKETING ROSARIO', p_destination_id, d.name,
-            case when direct then 'recibido' else 'en_transito' end,
-            nullif(trim(p_recipient_name),''), public.app_person(), auth.uid(), nullif(trim(p_notes),''), s.id,
-            case when direct then l.qty end, case when direct then true end);
-    if direct then
-      insert into public.destination_stock(destination_id, item_id, qty) values (p_destination_id, l.item_id, l.qty)
-      on conflict (destination_id, item_id) do update set qty = public.destination_stock.qty + excluded.qty, updated_at = now();
-    end if;
+                                 recipient_name, person, created_by, notes, shipment_id)
+    values (l.item_id, 'envio_destino', l.qty, current_date, 'DEPOSITO MARKETING ROSARIO', p_destination_id, d.name, 'en_transito',
+            nullif(trim(p_recipient_name),''), public.app_person(), auth.uid(), nullif(trim(p_notes),''), s.id);
   end loop;
   return s;
 end; $$;

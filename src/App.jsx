@@ -277,6 +277,16 @@ export default function App() {
   }
 
   function openReception(sh) {
+    // Concesionarios (sin acceso a la plataforma): lo marca el equipo cuando el concesionario avisa que le llegó
+    if (!destById[sh.destination_id]?.is_depot && !isPunto) {
+      const ls = linesByShipment[sh.id] || [];
+      setModal({
+        type: 'confirm', title: 'Marcar como recibido', yes: 'Sí, ya le llegó',
+        text: `¿${sh.destination_name} te avisó que ya recibió este envío (${ls.map(l => `${l.items?.name} ×${l.qty}`).join(', ')})? Se suma a lo que tiene el concesionario.`,
+        onYes: () => run(supabase.rpc('receive_shipment', { p_shipment_id: sh.id, p_lines: ls.map(l => ({ movement_id: l.id, ok: true })), p_notes: null }), 'Marcado como recibido. Ya figura en el concesionario.')
+      });
+      return;
+    }
     const lines = (linesByShipment[sh.id] || []).map(m => ({ movement_id: m.id, name: m.items?.name, qty: m.qty, ok: null, qty_received: 0, note: '' }));
     setError(''); setNotice('');
     setModal({ type: 'receive', shipment: sh, lines, notes: '' });
@@ -696,7 +706,7 @@ function DepositoView({ lastSent, isDepot, isPunto, canOperate, destinations, se
         </div>
         {isDepot
           ? <p className="muted small">El stock sube cuando confirmás la recepción de un envío o cuando cargás stock propio. Baja con cada entrega. El punto de restock sugerido se calcula con tus entregas de los últimos 90 días.</p>
-          : <p className="muted small">Concesionario: acá solo ves lo que le enviamos y cuándo. Los envíos ya descuentan del DEPOSITO MARKETING ROSARIO. Lo que el concesionario va usando se descuenta a mano con «Ajustar», y la reposición se pide por mensaje.</p>}
+          : <p className="muted small">Concesionario: acá solo ves lo que le enviamos y cuándo. Los envíos descuentan del DEPOSITO MARKETING ROSARIO al enviarse y se suman acá cuando los marcás como recibidos. Lo que el concesionario va usando se descuenta a mano con «Ajustar», y la reposición se pide por mensaje.</p>}
         <table>
           <thead>{isDepot
             ? <tr><th>Material</th><th>Stock</th><th>Punto de restock</th><th>Reponer</th><th>Estado</th>{canOperate && <th></th>}</tr>
@@ -1074,7 +1084,7 @@ function SendModal({ modal, setModal, items, destinations, onClose, onSubmit }) 
       <button type="button" className="secondary-btn add-line-btn" onClick={addLine}>+ Agregar otro material</button>
       <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
       {destinations.find(d => d.id === modal.destination_id)?.is_depot === false
-        ? <p className="muted small">Concesionario: sale del DEPOSITO MARKETING ROSARIO y queda registrado ahora con la fecha de hoy, para seguimiento. No requiere recepción.</p>
+        ? <p className="muted small">Concesionario: sale del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Cuando el concesionario te avise que le llegó, lo marcás como recibido en «En camino» y recién ahí figura en lo que tiene.</p>
         : <p className="muted small">Todo sale del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Se suma al stock del depósito cuando lo reciban y lo controlen.</p>}
     </Modal>
   );
