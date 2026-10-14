@@ -20,3 +20,37 @@
 .events-list { display: grid; gap: 16px; }
 .event-card { border: 1px solid #e2e8ee; border-radius: 10px; padding: 14px 16px; }
 .event-card h3 { margin: 0 0 6px; }
+
+/* Envíos con lista y recepción con control */
+.hub-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.hub-btn { text-align: left; border: 1px solid #cdd7df; background: #fff; border-radius: 12px; padding: 20px; display: grid; gap: 8px; }
+.hub-btn:hover { border-color: #1769aa; background: #f3f8fc; }
+.hub-btn strong { font-size: 20px; color: #17212b; }
+.hub-btn span { color: #5d6b78; font-size: 14px; }
+.send-lines { display: grid; gap: 10px; }
+.send-line { display: grid; grid-template-columns: minmax(0, 1fr) 110px auto; gap: 10px; align-items: center; }
+.add-line-btn { width: auto; margin-top: 12px; }
+.notes-label { display: grid; gap: 7px; font-weight: 600; margin-top: 14px; }
+.check-lines { display: grid; gap: 10px; margin: 14px 0; }
+.check-line { border: 1px solid #e2e8ee; border-radius: 10px; padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.check-line.is-ok { border-color: #b7dfc4; background: #f4fbf6; }
+.check-line.is-bad { border-color: #f1b8b8; background: #fff6f6; }
+.check-name small { color: #6c7b86; margin-top: 2px; }
+.check-btns { display: flex; gap: 8px; }
+.check-btn { width: 46px; height: 46px; border-radius: 10px; border: 2px solid #cdd7df; background: #fff; font-size: 22px; font-weight: 800; color: #73808c; }
+.check-btn.yes.on { background: #14602b; border-color: #14602b; color: #fff; }
+.check-btn.no.on { background: #b42318; border-color: #b42318; color: #fff; }
+.check-extra { grid-column: 1 / -1; display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 10px; }
+.check-extra label { display: grid; gap: 5px; font-weight: 600; font-size: 13px; }
+.ship-lines { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ship-lines li { display: flex; gap: 8px; align-items: baseline; }
+.tick { font-weight: 800; width: 14px; flex: none; color: #73808c; }
+.tick.ok { color: #14602b; }
+.tick.bad { color: #b42318; }
+.review-card { border-color: #f1c98a; background: #fffaf1; margin-bottom: 22px; }
+.review-item { border-top: 1px solid #edf1f4; padding: 12px 0; display: grid; gap: 8px; justify-items: start; }
+.review-head { display: grid; gap: 2px; }
+.review-head small { color: #6c7b86; }
+.obs-text { margin: 0; font-style: italic; color: #4a5865; }
+@media (max-width: 700px) { .hub-choices { grid-template-columns: 1fr; } .send-line { grid-template-columns: 1fr 90px; } .send-line .link-btn { grid-column: 1 / -1; justify-self: start; } .check-extra { grid-template-columns: 1fr; } }
+.check-name strong, .check-name small { display: block; }
