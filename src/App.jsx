@@ -504,7 +504,7 @@ function Login({ onSubmit, error }) {
   return (
     <div className="login-screen">
       <form className="login-card" onSubmit={onSubmit}>
-        <div className="brand dark-brand">NEOSTAR<span>Control de stock</span></div>
+        <div className="brand dark-brand">MARKETING<span>Control de stock</span></div>
         <h2>Ingresar</h2>
         <input type="email" name="email" placeholder="Email" required />
         <input type="password" name="password" placeholder="Contraseña" required />
@@ -519,7 +519,7 @@ function NoAccess({ onSignOut, message }) {
   return (
     <div className="login-screen">
       <div className="login-card">
-        <div className="brand dark-brand">NEOSTAR<span>Control de stock</span></div>
+        <div className="brand dark-brand">MARKETING<span>Control de stock</span></div>
         <h2>Sin acceso</h2>
         <p className="muted">{message || 'Tu usuario todavía no tiene permisos asignados. Pedile a un administrador que te dé acceso.'}</p>
         <button className="primary-btn" onClick={onSignOut}>Cerrar sesión</button>
