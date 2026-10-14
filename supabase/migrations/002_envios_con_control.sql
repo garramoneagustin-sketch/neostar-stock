@@ -144,3 +144,114 @@ end $$;
 do $$ begin
   alter publication supabase_realtime add table public.shipments;
 exception when duplicate_object then null; when undefined_object then null; end $$;
+
+-- =====================================================================
+-- Eventos: fecha de inicio/fin, marca, lista de elementos con reserva de stock
+-- Reservar NO descuenta stock: el stock sale recién cuando se entregan los materiales.
+-- Disponible = stock del Depo Central - lo reservado por otros eventos abiertos que se pisan en fechas.
+-- =====================================================================
+alter table public.events add column if not exists start_date date;
+alter table public.events add column if not exists end_date date;
+alter table public.events add column if not exists brand text;
+update public.events set start_date = event_date where start_date is null;
+update public.events set end_date = event_date where end_date is null;
+
+create or replace function public.item_available_for_event(p_item_id uuid, p_start date, p_end date, p_exclude_event uuid default null)
+returns integer language sql stable security definer set search_path = public as $$
+  select coalesce((select stock_nucleo from public.items where id = p_item_id), 0)
+       - coalesce((select sum(ei.qty_allocated) from public.event_items ei join public.events e on e.id = ei.event_id
+                    where ei.item_id = p_item_id and e.status = 'abierto' and ei.remito_salida_date is null
+                      and (p_exclude_event is null or e.id <> p_exclude_event)
+                      and coalesce(e.start_date, e.event_date) <= p_end and coalesce(e.end_date, e.event_date) >= p_start), 0)
+$$;
+
+create or replace function public.create_event(p_event_name text, p_start_date date, p_end_date date, p_brand text,
+  p_items jsonb, p_carried_by text default null, p_notes text default null)
+returns public.events language plpgsql security definer set search_path = public as $$
+declare e public.events; l record; av integer;
+begin
+  perform public._require_staff();
+  if coalesce(trim(p_event_name),'') = '' then raise exception 'Falta el nombre del evento'; end if;
+  if p_start_date is null or p_end_date is null then raise exception 'Falta la fecha de inicio o de fin'; end if;
+  if p_end_date < p_start_date then raise exception 'La fecha de fin no puede ser anterior a la de inicio'; end if;
+  if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
+    raise exception 'Agregá al menos un elemento al evento';
+  end if;
+  insert into public.events(event_name, event_date, start_date, end_date, brand, carried_by, status, notes)
+  values (trim(p_event_name), p_start_date, p_start_date, p_end_date, nullif(trim(p_brand),''), nullif(trim(p_carried_by),''), 'abierto', nullif(trim(p_notes),''))
+  returning * into e;
+  for l in select (x->>'item_id')::uuid as item_id, sum((x->>'qty')::integer) as qty from jsonb_array_elements(p_items) x group by 1 loop
+    if l.qty is null or l.qty <= 0 then raise exception 'La cantidad debe ser mayor a cero'; end if;
+    av := public.item_available_for_event(l.item_id, p_start_date, p_end_date, e.id);
+    if l.qty > av then
+      raise exception 'Solo hay % disponible(s) de "%" para esas fechas', greatest(av,0), coalesce((select name from public.items where id = l.item_id), 'material inexistente');
+    end if;
+    insert into public.event_items(event_id, item_id, qty_allocated) values (e.id, l.item_id, l.qty);
+  end loop;
+  return e;
+end; $$;
+
+-- Entregar los materiales del evento: ahí sí sale del Depo Central
+create or replace function public.withdraw_event(p_event_id uuid, p_withdrawn_by text)
+returns public.events language plpgsql security definer set search_path = public as $$
+declare e public.events; ei record; n integer := 0;
+begin
+  perform public._require_staff();
+  if coalesce(trim(p_withdrawn_by),'') = '' then raise exception 'Indicá quién retira los materiales'; end if;
+  select * into e from public.events where id = p_event_id for update;
+  if not found or e.status <> 'abierto' then raise exception 'El evento no existe o no está abierto'; end if;
+  perform set_config('app.stock_rpc','on',true);
+  for ei in select * from public.event_items where event_id = p_event_id and remito_salida_date is null for update loop
+    update public.items set stock_nucleo = stock_nucleo - ei.qty_allocated where id = ei.item_id and stock_nucleo >= ei.qty_allocated;
+    if not found then
+      raise exception 'Stock insuficiente en Depo Central para "%"', (select name from public.items where id = ei.item_id);
+    end if;
+    update public.event_items set remito_salida_date = now(), remito_salida_signed_by = trim(p_withdrawn_by) where id = ei.id;
+    n := n + 1;
+  end loop;
+  if n = 0 then raise exception 'Este evento no tiene materiales pendientes de entrega'; end if;
+  return e;
+end; $$;
+
+create or replace function public.cancel_event(p_event_id uuid)
+returns public.events language plpgsql security definer set search_path = public as $$
+declare e public.events;
+begin
+  perform public._require_staff();
+  if exists (select 1 from public.event_items where event_id = p_event_id and remito_salida_date is not null) then
+    raise exception 'No se puede cancelar: ya se entregaron materiales. Registrá el regreso.';
+  end if;
+  update public.events set status = 'cancelado', closed_at = now() where id = p_event_id and status = 'abierto' returning * into e;
+  if not found then raise exception 'El evento no existe o ya no está abierto'; end if;
+  return e;
+end; $$;
+
+-- Regreso: solo se puede controlar lo que ya fue entregado
+create or replace function public.close_event_item(p_event_item_id uuid, p_qty_returned integer,
+  p_remito_llegada_date timestamptz, p_remito_llegada_signed_by text)
+returns public.event_items language plpgsql security definer set search_path = public as $$
+declare ei public.event_items;
+begin
+  perform public._require_staff();
+  select * into ei from public.event_items where id = p_event_item_id for update;
+  if not found then raise exception 'Registro inexistente'; end if;
+  if ei.remito_salida_date is null then raise exception 'Este material todavía no fue entregado'; end if;
+  if ei.remito_llegada_ok then raise exception 'Este material ya fue controlado al regreso'; end if;
+  if p_qty_returned is null or p_qty_returned < 0 or p_qty_returned > ei.qty_allocated then
+    raise exception 'La cantidad devuelta debe estar entre 0 y % (lo que salió)', ei.qty_allocated;
+  end if;
+  perform set_config('app.stock_rpc','on',true);
+  update public.event_items set qty_returned = p_qty_returned, remito_llegada_date = coalesce(p_remito_llegada_date, now()),
+         remito_llegada_signed_by = p_remito_llegada_signed_by, remito_llegada_ok = true
+   where id = p_event_item_id returning * into ei;
+  update public.items set stock_nucleo = stock_nucleo + p_qty_returned where id = ei.item_id;
+  return ei;
+end; $$;
+
+do $$ declare f record; begin
+  for f in select p.oid::regprocedure as sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname in ('create_event','withdraw_event','cancel_event','close_event_item','item_available_for_event') loop
+    execute format('revoke all on function %s from public, anon', f.sig);
+    execute format('grant execute on function %s to authenticated', f.sig);
+  end loop;
+end $$;

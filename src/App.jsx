@@ -83,8 +83,7 @@ export default function App() {
   const [editingItem, setEditingItem] = useState(null);
   const [restock, setRestock] = useState({ item_id: '', qty: 1, source: 'proveedor', cost: '', notes: '' });
   const [withdrawal, setWithdrawal] = useState({ item_id: '', qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' });
-  const [eventData, setEventData] = useState({ event_name: '', event_date: '', carried_by: '', notes: '' });
-
+  
   const role = profile?.role || 'none';
   const isStaff = role === 'admin' || role === 'editor';
   const isPunto = role === 'punto';
@@ -295,13 +294,62 @@ export default function App() {
     }), 'Ajuste registrado');
   }
 
+  const emptyEvent = () => ({ type: 'event', event_name: '', start_date: '', end_date: '', brand: '', carried_by: '', notes: '', lines: [{ item_id: '', qty: 1 }] });
+
+  // Disponible = stock del Depo Central - reservado por otros eventos abiertos que se pisan en fechas
+  function availableOf(itemId, start, end, excludeEventId) {
+    const it = itemById[itemId];
+    if (!it) return 0;
+    const evById = Object.fromEntries(events.map(ev => [ev.id, ev]));
+    const reserved = eventItems.filter(ei => {
+      const ev = evById[ei.event_id];
+      if (!ev || ev.status !== 'abierto' || ei.item_id !== itemId || ei.remito_salida_date || ev.id === excludeEventId) return false;
+      if (!start || !end) return true;
+      return (ev.start_date || ev.event_date) <= end && (ev.end_date || ev.event_date) >= start;
+    }).reduce((acc, ei) => acc + ei.qty_allocated, 0);
+    return Math.max(0, Number(it.stock_nucleo) - reserved);
+  }
+
   function saveEvent(e) {
     e.preventDefault();
-    if (!eventData.event_name.trim() || !eventData.event_date || !eventData.carried_by.trim()) { setError('Falta información del evento'); return; }
-    run(supabase.rpc('open_event', {
-      p_event_name: eventData.event_name.trim(), p_event_date: eventData.event_date,
-      p_carried_by: eventData.carried_by.trim(), p_notes: eventData.notes || null
-    }), 'Evento creado', () => setEventData({ event_name: '', event_date: '', carried_by: '', notes: '' }));
+    const d = modal;
+    const lines = d.lines.filter(l => l.item_id && Number(l.qty) > 0);
+    if (!d.event_name.trim() || !d.start_date || !d.end_date || !d.brand) { setError('Completá nombre, fechas y marca del evento'); return; }
+    if (d.end_date < d.start_date) { setError('La fecha de fin no puede ser anterior a la de inicio'); return; }
+    if (!lines.length) { setError('Agregá al menos un elemento con su cantidad'); return; }
+    run(supabase.rpc('create_event', {
+      p_event_name: d.event_name.trim(), p_start_date: d.start_date, p_end_date: d.end_date, p_brand: d.brand,
+      p_items: lines.map(l => ({ item_id: l.item_id, qty: Number(l.qty) })),
+      p_carried_by: d.carried_by?.trim() || null, p_notes: d.notes || null
+    }), 'Evento creado. Los elementos quedaron reservados (el stock sale cuando los entregues).');
+  }
+
+  function saveWithdrawEvent(e) {
+    e.preventDefault();
+    if (!modal.by.trim()) { setError('Indicá quién retira los materiales'); return; }
+    run(supabase.rpc('withdraw_event', { p_event_id: modal.event.id, p_withdrawn_by: modal.by.trim() }),
+      'Materiales entregados: ya salieron del Depo Central. Podés imprimir el retiro para firmar.');
+  }
+
+  function saveReturnEvent(e) {
+    e.preventDefault();
+    const m = modal;
+    const job = (async () => {
+      for (const l of m.lines) {
+        const r = await supabase.rpc('close_event_item', {
+          p_event_item_id: l.id, p_qty_returned: Number(l.qty_returned), p_remito_llegada_date: null,
+          p_remito_llegada_signed_by: m.by?.trim() || null
+        });
+        if (r.error) return r;
+      }
+      return supabase.rpc('close_event', { p_event_id: m.event.id });
+    })();
+    run(job, 'Regreso registrado. Lo devuelto volvió al Depo Central.');
+  }
+
+  function cancelEvent(ev) {
+    if (!window.confirm(`¿Cancelar "${ev.event_name}"? Se libera lo que tenía reservado.`)) return;
+    run(supabase.rpc('cancel_event', { p_event_id: ev.id }), 'Evento cancelado');
   }
 
   // ---------- Derivados ----------
@@ -400,7 +448,7 @@ export default function App() {
             {isStaff && tab === 'ingresos' && <button className="primary-btn" onClick={() => setModal({ type: 'restock' })}>+ Registrar ingreso</button>}
             {isStaff && tab === 'retiros' && <button className="primary-btn" onClick={() => setModal({ type: 'withdrawal' })}>+ Registrar retiro</button>}
             {isStaff && tab === 'movimientos' && <button className="primary-btn" onClick={() => setModal({ type: 'hub' })}>+ Nuevo movimiento</button>}
-            {isStaff && tab === 'eventos' && <button className="primary-btn" onClick={() => setModal({ type: 'event' })}>+ Nuevo evento</button>}
+            {isStaff && tab === 'eventos' && <button className="primary-btn" onClick={() => { setError(''); setNotice(''); setModal(emptyEvent()); }}>+ Nuevo evento</button>}
           </div>
         </header>
 
@@ -427,7 +475,7 @@ export default function App() {
           tab === 'ingresos' ? <RestockTable rows={restocks} /> :
           tab === 'retiros' ? <WithdrawalTable rows={withdrawals} /> :
           tab === 'movimientos' ? <MovementTable rows={shipments} lines={linesByShipment} canReview={isStaff} onReview={reviewShipment} /> :
-          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} /> :
+          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} itemById={itemById} isStaff={isStaff} onNew={() => { setError(''); setNotice(''); setModal(emptyEvent()); }} onPrint={(ev) => setModal({ type: 'retiro', event: ev })} onWithdraw={(ev) => setModal({ type: 'withdrawEvent', event: ev, by: ev.carried_by || '' })} onReturn={(ev) => setModal({ type: 'returnEvent', event: ev, by: '', lines: eventItems.filter(ei => ei.event_id === ev.id && ei.remito_salida_date && !ei.remito_llegada_ok).map(ei => ({ id: ei.id, name: ei.items?.name, qty: ei.qty_allocated, qty_returned: ei.qty_allocated })) })} onCancel={cancelEvent} /> :
           tab === 'historial' ? <HistoryTab rows={history} /> : null
         }
       </main>
@@ -437,7 +485,10 @@ export default function App() {
       {modal?.type === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} onClose={() => setModal(null)} onSubmit={saveWithdrawal} />}
       {modal?.type === 'hub' && <MovementHub pending={inTransit} lines={linesByShipment} onClose={() => setModal(null)} onSend={() => setModal({ type: 'send', destination_id: '', recipient_name: '', notes: '', lines: [{ item_id: '', qty: 1 }] })} onReceive={openReception} />}
       {modal?.type === 'send' && <SendModal modal={modal} setModal={setModal} items={items} destinations={destinations} onClose={() => setModal(null)} onSubmit={saveShipment} />}
-      {modal?.type === 'event' && <EventModal eventData={eventData} setEventData={setEventData} onClose={() => setModal(null)} onSubmit={saveEvent} />}
+      {modal?.type === 'event' && <EventModal modal={modal} setModal={setModal} items={items} availableOf={availableOf} onClose={() => setModal(null)} onSubmit={saveEvent} />}
+      {modal?.type === 'withdrawEvent' && <WithdrawEventModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveWithdrawEvent} />}
+      {modal?.type === 'returnEvent' && <ReturnEventModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveReturnEvent} />}
+      {modal?.type === 'retiro' && <RetiroView event={modal.event} lines={eventItems.filter(ei => ei.event_id === modal.event.id)} itemById={itemById} onClose={() => setModal(null)} />}
       {modal?.type === 'receive' && <ReceiveModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveReception} />}
       {modal?.type === 'pwithdraw' && <PointWithdrawModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={savePointWithdrawal} />}
       {modal?.type === 'pstockin' && <PointStockInModal modal={modal} setModal={setModal} items={items} onClose={() => setModal(null)} onSubmit={savePointStockIn} />}
@@ -718,26 +769,57 @@ function MovementTable({ rows, lines, canReview, onReview }) {
   );
 }
 
-function EventsTable({ events, eventItems }) {
+const EVENT_LABELS = { abierto: 'Abierto', cerrado: 'Cerrado', cancelado: 'Cancelado' };
+const fmtRange = (e) => {
+  const a = e.start_date || e.event_date, b = e.end_date || e.event_date;
+  return a === b ? fmtDate(a + 'T12:00:00') : `${fmtDate(a + 'T12:00:00')} al ${fmtDate(b + 'T12:00:00')}`;
+};
+
+function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, onWithdraw, onReturn, onCancel }) {
   return (
     <section className="card">
       <h2>Eventos</h2>
       {events.length ? (
         <div className="events-list">
-          {events.map(e => (
-            <div key={e.id} className="event-card">
-              <h3>{e.event_name}</h3>
-              <p><strong>Fecha:</strong> {fmtDate(e.event_date)} | <strong>Llevado por:</strong> {e.carried_by} | <strong>Estado:</strong> <span className={`chip ${e.status}`}>{e.status}</span></p>
-              <table style={{ marginTop: '10px' }}>
-                <thead><tr><th>Material</th><th>Cantidad</th><th>Remito salida</th><th>Remito llegada</th><th>Usado</th></tr></thead>
-                <tbody>
-                  {eventItems.filter(ei => ei.event_id === e.id).map(ei => <tr key={ei.id}><td>{ei.items?.name}</td><td>{ei.qty_allocated}</td><td className={ei.remito_salida_date ? 'ok' : 'pending'}>{ei.remito_salida_date ? '✓' : '✗'}</td><td className={ei.remito_llegada_ok ? 'ok' : 'pending'}>{ei.remito_llegada_ok ? '✓' : '✗'}</td><td>{ei.remito_llegada_ok ? ei.qty_used : '—'}</td></tr>)}
-                </tbody>
-              </table>
-            </div>
-          ))}
+          {events.map(e => {
+            const lines = eventItems.filter(ei => ei.event_id === e.id);
+            const pendingOut = lines.some(l => !l.remito_salida_date);
+            const outNow = lines.some(l => l.remito_salida_date && !l.remito_llegada_ok);
+            return (
+              <div key={e.id} className="event-card">
+                <div className="event-head">
+                  <div>
+                    <h3>{e.event_name}</h3>
+                    <p className="muted small">{fmtRange(e)}{e.brand ? ` · ${e.brand}` : ''}{e.carried_by ? ` · Responsable: ${e.carried_by}` : ''}</p>
+                  </div>
+                  <span className={`chip ${e.status}`}>{EVENT_LABELS[e.status] || e.status}</span>
+                </div>
+                <table>
+                  <thead><tr><th>Elemento</th><th>Cantidad</th><th>Entrega</th><th>Regreso</th></tr></thead>
+                  <tbody>
+                    {lines.map(ei => (
+                      <tr key={ei.id}>
+                        <td>{ei.items?.name}{itemById[ei.item_id]?.brand && itemById[ei.item_id].brand !== 'Genérico' ? <small>{itemById[ei.item_id].brand}</small> : null}</td>
+                        <td>{ei.qty_allocated}</td>
+                        <td className={ei.remito_salida_date ? 'ok' : 'pending'}>{ei.remito_salida_date ? `✓ ${ei.remito_salida_signed_by || ''}` : 'Reservado'}</td>
+                        <td>{ei.remito_llegada_ok ? `✓ volvieron ${ei.qty_returned}` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="event-actions">
+                  <button className="secondary-btn small-btn" onClick={() => onPrint(e)}>Retiro para imprimir</button>
+                  {isStaff && e.status === 'abierto' && pendingOut && <button className="primary-btn small-btn" onClick={() => onWithdraw(e)}>Entregar materiales</button>}
+                  {isStaff && e.status === 'abierto' && outNow && <button className="primary-btn small-btn" onClick={() => onReturn(e)}>Registrar regreso</button>}
+                  {isStaff && e.status === 'abierto' && !lines.some(l => l.remito_salida_date) && <button className="link-btn danger" onClick={() => onCancel(e)}>Cancelar evento</button>}
+                </div>
+              </div>
+            );
+          })}
         </div>
-      ) : <p className="muted">No hay eventos</p>}
+      ) : (
+        <div className="empty-state"><p className="muted">Todavía no hay eventos.</p>{isStaff && <button className="primary-btn" onClick={onNew}>+ Nuevo evento</button>}</div>
+      )}
     </section>
   );
 }
@@ -893,17 +975,159 @@ function SendModal({ modal, setModal, items, destinations, onClose, onSubmit }) 
   );
 }
 
-function EventModal({ eventData, setEventData, onClose, onSubmit }) {
-  const set = (k, v) => setEventData(p => ({ ...p, [k]: v }));
+function EventModal({ modal, setModal, items, availableOf, onClose, onSubmit }) {
+  const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
+  const setLine = (i, k, v) => setModal(p => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, [k]: v } : l)) }));
+  const addLine = () => setModal(p => ({ ...p, lines: [...p.lines, { item_id: '', qty: 1 }] }));
+  const delLine = (i) => setModal(p => ({ ...p, lines: p.lines.length > 1 ? p.lines.filter((_, j) => j !== i) : p.lines }));
+  const setBrand = (brand) => setModal(p => ({
+    ...p, brand,
+    lines: p.lines.map(l => {
+      const it = items.find(x => x.id === l.item_id);
+      const ok = it && (it.brand === brand || it.brand === 'Genérico' || it.brand === 'Neostar');
+      return ok ? l : { item_id: '', qty: 1 };
+    })
+  }));
+  const pool = items.filter(i => modal.brand && (i.brand === modal.brand || i.brand === 'Genérico' || i.brand === 'Neostar'));
+  const used = new Set(modal.lines.map(l => l.item_id));
+  const cats = [...new Set(pool.map(i => i.category))].sort();
+  const avail = (id) => availableOf(id, modal.start_date, modal.end_date);
   return (
-    <Modal title="Nuevo evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Crear evento">
+    <Modal title="Nuevo evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar evento">
       <div className="form-grid">
-        <label>Nombre del evento *<input required value={eventData.event_name} onChange={e => set('event_name', e.target.value)} placeholder="Ej: Activación BYD Rosario" /></label>
-        <label>Fecha del evento *<input type="date" required value={eventData.event_date} onChange={e => set('event_date', e.target.value)} /></label>
-        <label>Llevado por *<input required value={eventData.carried_by} onChange={e => set('carried_by', e.target.value)} placeholder="Nombre de quién lleva el stock" /></label>
-        <label className="full-width">Notas<textarea value={eventData.notes} onChange={e => set('notes', e.target.value)} placeholder="Información adicional" /></label>
+        <label className="full-width">Nombre del evento *<input required value={modal.event_name} onChange={e => set('event_name', e.target.value)} placeholder="Ej: Activación BYD Rosario" /></label>
+        <label>Fecha de inicio *<input type="date" required value={modal.start_date} onChange={e => setModal(p => ({ ...p, start_date: e.target.value, end_date: p.end_date && p.end_date >= e.target.value ? p.end_date : e.target.value }))} /></label>
+        <label>Fecha de fin *<input type="date" required min={modal.start_date || undefined} value={modal.end_date} onChange={e => set('end_date', e.target.value)} /></label>
+        <label>Marca *<select required value={modal.brand} onChange={e => setBrand(e.target.value)}><option value="">Seleccionar</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select></label>
+        <label>Responsable (opcional)<input value={modal.carried_by} onChange={e => set('carried_by', e.target.value)} placeholder="Quién se lleva los elementos" /></label>
       </div>
+      <h3 className="sub">Elementos a llevar</h3>
+      {!modal.brand && <p className="muted small">Elegí la marca y te muestro los elementos de esa marca y los genéricos.</p>}
+      {modal.brand && (
+        <>
+          <div className="send-lines">
+            {modal.lines.map((l, i) => {
+              const max = l.item_id ? avail(l.item_id) : undefined;
+              return (
+                <div key={i} className="send-line">
+                  <select value={l.item_id} onChange={e => setLine(i, 'item_id', e.target.value)} required>
+                    <option value="">Elegir elemento…</option>
+                    {cats.map(c => (
+                      <optgroup key={c} label={c}>
+                        {pool.filter(x => x.category === c && (x.id === l.item_id || !used.has(x.id))).map(x => {
+                          const a = avail(x.id);
+                          return <option key={x.id} value={x.id} disabled={a <= 0 && x.id !== l.item_id}>{x.name}{x.brand && x.brand !== 'Genérico' ? ` · ${x.brand}` : ''} (disponibles: {a})</option>;
+                        })}
+                      </optgroup>
+                    ))}
+                  </select>
+                  <input type="number" min="1" max={max || undefined} disabled={!l.item_id} value={l.qty} onChange={e => setLine(i, 'qty', e.target.value)} aria-label="Cantidad" required />
+                  <button type="button" className="link-btn danger" onClick={() => delLine(i)} disabled={modal.lines.length === 1}>Quitar</button>
+                  {l.item_id && <small className="line-hint">Máximo {max}{modal.start_date ? ' para esas fechas' : ''}</small>}
+                </div>
+              );
+            })}
+          </div>
+          <button type="button" className="secondary-btn add-line-btn" onClick={addLine}>+ Agregar otro elemento</button>
+        </>
+      )}
+      <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
+      <p className="muted small">Guardar reserva los elementos para esas fechas: nadie más puede usarlos en otro evento que se pise. El stock sale del Depo Central recién cuando tocás «Entregar materiales».</p>
     </Modal>
+  );
+}
+
+function WithdrawEventModal({ modal, setModal, onClose, onSubmit }) {
+  return (
+    <Modal title="Entregar materiales del evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Entregar y descontar stock">
+      <p><strong>{modal.event.event_name}</strong></p>
+      <label className="full-width notes-label">Quién retira los materiales *<input required value={modal.by} onChange={e => setModal(p => ({ ...p, by: e.target.value }))} placeholder="Nombre y apellido" /></label>
+      <p className="muted small">Los elementos reservados salen ahora del Depo Central. Después podés imprimir el retiro para que lo firmen.</p>
+    </Modal>
+  );
+}
+
+function ReturnEventModal({ modal, setModal, onClose, onSubmit }) {
+  const setLine = (i, v) => setModal(p => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, qty_returned: v } : l)) }));
+  return (
+    <Modal title="Registrar regreso del evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Confirmar regreso">
+      <p className="muted small">Indicá cuánto volvió de cada elemento. Lo que vuelve se suma al Depo Central.</p>
+      <div className="send-lines">
+        {modal.lines.map((l, i) => (
+          <div key={l.id} className="send-line">
+            <div><strong>{l.name}</strong><small className="line-hint">Salieron {l.qty}</small></div>
+            <input type="number" min="0" max={l.qty} required value={l.qty_returned} onChange={e => setLine(i, e.target.value)} aria-label="Cantidad devuelta" />
+            <span />
+          </div>
+        ))}
+      </div>
+      <label className="full-width notes-label">Quién lo entrega de vuelta<input value={modal.by} onChange={e => setModal(p => ({ ...p, by: e.target.value }))} placeholder="Nombre y apellido" /></label>
+    </Modal>
+  );
+}
+
+/* Documento de retiro para imprimir o bajar en Word */
+const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function retiroHtml(event, rows) {
+  const today = new Date().toLocaleDateString('es-AR');
+  const trs = rows.map((r, i) => `<tr><td class="c">${i + 1}</td><td>${esc(r.name)}</td><td>${esc(r.brand)}</td><td class="c">${r.qty}</td><td class="c">☐ Correcto &nbsp; ☐ Con observaciones</td></tr>`).join('');
+  return `<style>
+.retiro{font-family:Arial,Helvetica,sans-serif;color:#111;font-size:12px;line-height:1.4}
+.retiro h1{font-size:20px;margin:0 0 2px;letter-spacing:.02em}
+.retiro .sub{color:#555;margin:0 0 14px}
+.retiro table{border-collapse:collapse;width:100%;margin:8px 0 14px}
+.retiro th,.retiro td{border:1px solid #444;padding:6px 8px;text-align:left;vertical-align:top}
+.retiro th{background:#eee;font-size:11px;text-transform:uppercase}
+.retiro td.c,.retiro th.c{text-align:center}
+.retiro .info td{border:1px solid #999}
+.retiro .info td:nth-child(odd){background:#f3f3f3;font-weight:bold;width:18%}
+.retiro .sign td{height:64px;vertical-align:bottom;width:50%}
+.retiro h2{font-size:13px;margin:14px 0 4px;text-transform:uppercase}
+.retiro p{margin:6px 0}
+</style>
+<div class="retiro">
+<h1>NEOSTAR · Retiro de elementos de marketing</h1>
+<p class="sub">Depósito principal · Nº ${esc(String(event.id).slice(0, 8).toUpperCase())} · Emitido el ${today}</p>
+<table class="info"><tr><td>Evento</td><td colspan="3">${esc(event.event_name)}</td></tr>
+<tr><td>Marca</td><td>${esc(event.brand || '—')}</td><td>Responsable</td><td>${esc(event.carried_by || '')}</td></tr>
+<tr><td>Fecha de inicio</td><td>${fmtDate((event.start_date || event.event_date) + 'T12:00:00')}</td><td>Fecha de fin</td><td>${fmtDate((event.end_date || event.event_date) + 'T12:00:00')}</td></tr></table>
+<h2>Elementos retirados</h2>
+<table><tr><th class="c" style="width:5%">#</th><th>Elemento</th><th style="width:16%">Marca</th><th class="c" style="width:10%">Cantidad</th><th class="c" style="width:30%">Estado al retirar</th></tr>${trs}</table>
+<p>Quien firma recibe los elementos detallados, se compromete a cuidarlos y a devolverlos en la fecha indicada, o a informar a Marketing dónde quedan si los conserva para un próximo evento. Cualquier faltante o daño debe informarse a Marketing.</p>
+<table class="sign"><tr><td>ENTREGA (Marketing)<br><br>Firma:<br>Aclaración:<br>Fecha:</td><td>RECIBE<br><br>Firma:<br>Aclaración y DNI:<br>Marca / sucursal:<br>Fecha:</td></tr></table>
+<h2>Devolución</h2>
+<table class="sign"><tr><td>Fecha de devolución:<br><br>Devuelve (firma y aclaración):</td><td>Recibe Marketing (firma y aclaración):<br><br>Observaciones:</td></tr></table>
+</div>`;
+}
+
+function RetiroView({ event, lines, itemById, onClose }) {
+  const rows = lines.map(l => ({ name: l.items?.name || itemById[l.item_id]?.name, brand: itemById[l.item_id]?.brand || '', qty: l.qty_allocated }));
+  const html = retiroHtml(event, rows);
+  const [msg, setMsg] = useState('');
+  function toWord() {
+    try {
+      const doc = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>Retiro</title></head><body>${html}</body></html>`;
+      const url = URL.createObjectURL(new Blob(['\ufeff', doc], { type: 'application/msword' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = `Retiro - ${event.event_name}.doc`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (err) { setMsg('No se pudo generar el archivo de Word'); }
+  }
+  function toPrint() { try { window.print(); } catch (err) { setMsg('No se pudo abrir la impresión'); } }
+  return (
+    <div className="modal-overlay print-overlay">
+      <div className="modal retiro-modal">
+        <div className="card-head no-print"><h2>Retiro de elementos</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
+        <div className="no-print retiro-actions">
+          <button type="button" className="primary-btn" onClick={toPrint}>Imprimir / Guardar PDF</button>
+          <button type="button" className="secondary-btn" onClick={toWord}>Descargar Word</button>
+          {msg && <span className="warn small">{msg}</span>}
+        </div>
+        {!rows.length && <p className="warn small no-print">Este evento todavía no tiene elementos cargados.</p>}
+        <div className="print-doc" dangerouslySetInnerHTML={{ __html: html }} />
+      </div>
+    </div>
   );
 }
 

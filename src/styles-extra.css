@@ -54,3 +54,27 @@
 .obs-text { margin: 0; font-style: italic; color: #4a5865; }
 @media (max-width: 700px) { .hub-choices { grid-template-columns: 1fr; } .send-line { grid-template-columns: 1fr 90px; } .send-line .link-btn { grid-column: 1 / -1; justify-self: start; } .check-extra { grid-template-columns: 1fr; } }
 .check-name strong, .check-name small { display: block; }
+
+/* Eventos */
+.event-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.event-head h3 { margin: 0 0 4px; }
+.event-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.event-actions .secondary-btn, .event-actions .primary-btn { width: auto; }
+.chip.cerrado { background: #e6f4ea; color: #14602b; }
+.line-hint { grid-column: 1 / -1; color: #6c7b86; font-size: 12px; margin-top: -4px; display: block; }
+.modal select { min-width: 0; }
+.retiro-modal { max-height: 92vh; overflow: auto; }
+.retiro-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.retiro-actions .secondary-btn { width: auto; }
+.print-doc { border: 1px solid #cdd7df; border-radius: 8px; padding: 22px; background: #fff; }
+@media print {
+  html, body, #root { background: #fff !important; height: auto !important; min-height: 0 !important; }
+  .app-shell { display: block; min-height: 0; }
+  .sidebar, .content { display: none !important; }
+  body * { visibility: hidden !important; }
+  .print-doc, .print-doc * { visibility: visible !important; }
+  .print-doc { position: absolute; left: 0; top: 0; width: 100%; border: 0; padding: 0; }
+  .no-print { display: none !important; }
+  .modal-overlay.print-overlay { position: static; display: block; background: none; padding: 0; }
+  .retiro-modal { max-height: none; overflow: visible; border: 0; padding: 0; width: 100%; }
+}
