@@ -1,42 +1,70 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from './lib/supabase';
 import './styles.css';
+import './styles-extra.css';
 
 const CATEGORIES = [
-  'Indumentaria y textil',
-  'Bazar y estilo de vida',
-  'Accesorios y tecnología',
-  'Car care / accesorios de auto',
-  'Portapatentes',
+  'Alfombras',
+  'Carpetas',
+  'Llaveros',
+  'Merchandising institucional',
   'Portadocumentos',
-  'Stickers Domo',
-  'Regalos',
-  'Equipamiento de eventos',
+  'Portapatentes',
+  'Stickers y Calcomanías',
+  'Accesorios de armado',
+  'Carpas y Gazebos',
+  'Cartelería y estructuras',
+  'Flagbanners',
+  'Mesas',
+  'Roll Banners',
+  'Sillas',
+  'Sombrillas',
   'Otros'
 ];
 
-const SUBCATEGORIES = [
-  'Gorras y sombreros', 'Remeras y chombas', 'Camperas y buzos', 'Mochilas y bolsos',
-  'Termos, mates y vasos', 'Botellas', 'Paraguas y camping', 'Llaveros y pines',
-  'Librería', 'Powerbanks y cargadores', 'Anteojos y relojes',
-  'Limpieza vehicular', 'Herramientas e infladores', 'Roll banners', 'Sillas', 'Mesas', 'Otros'
+const BRANDS = ['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar'];
+
+const REASONS = [
+  ['regalo_corporativo', 'Regalo corporativo'],
+  ['incidencia_cliente', 'Incidencia con cliente'],
+  ['uso_interno', 'Uso interno'],
+  ['otro', 'Otro']
 ];
 
-const BRANDS = ['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar', 'Genérico'];
-const DESTINATIONS = ['Santa Fe', 'Cañada de Gómez', 'Funes', 'Nissan Rosario', 'Kia Rosario', 'BYD Rosario', 'Jeep Rosario', 'RAM Rosario', 'Honda Rosario', 'Suzuki Rosario', 'Subaru Rosario'];
+const MOVE_LABELS = {
+  envio_destino: 'Envío a depósito',
+  entrega: 'Entrega',
+  ingreso_punto: 'Carga en depósito',
+  ajuste: 'Ajuste de stock',
+  stock_inicial: 'Stock inicial',
+  compra: 'Compra'
+};
+
+const STATE_LABELS = {
+  en_transito: 'En camino',
+  recibido: 'Recibido',
+  recibido_con_diferencia: 'Recibido con diferencia',
+  entregado: 'Entregado',
+  ajustado: 'Ajustado'
+};
 
 const emptyItem = {
-  name: '', sku: '', kind: 'consumible', category: 'Otros', subcategory: '',
-  scope: 'generico', brand: '', occasion: '',
-  stock_nucleo: 0, stock_sf: 0, stock_canada: 0, stock_funes: 0,
-  reorder_nucleo: 10, reorder_sf: 5, lead_time_days: 15
+  name: '', sku: '', kind: 'consumible', category: 'Otros', brand: 'Genérico',
+  occasion: '', stock_nucleo: 0, reorder_nucleo: 0, lead_time_days: 15
 };
+
+const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('es-AR') : '—');
+const fmtDateTime = (d) => (d ? new Date(d).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' }) : '—');
+const daysSince = (d) => Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
 
 export default function App() {
   const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(undefined); // undefined = cargando, null = sin perfil
   const [tab, setTab] = useState('dashboard');
   const [items, setItems] = useState([]);
   const [destinations, setDestinations] = useState([]);
+  const [destStock, setDestStock] = useState([]);
+  const [pointStatus, setPointStatus] = useState([]);
   const [restocks, setRestocks] = useState([]);
   const [withdrawals, setWithdrawals] = useState([]);
   const [movements, setMovements] = useState([]);
@@ -44,65 +72,91 @@ export default function App() {
   const [eventItems, setEventItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('Todas');
   const [brandFilter, setBrandFilter] = useState('Todas');
-  const [showItemModal, setShowItemModal] = useState(false);
-  const [editingItem, setEditingItem] = useState(null);
+  const [selectedDest, setSelectedDest] = useState('');
+  const [modal, setModal] = useState(null); // { type, ...datos }
   const [form, setForm] = useState(emptyItem);
-  const [activeModal, setActiveModal] = useState(null); // 'restock', 'withdrawal', 'movement', 'event'
+  const [editingItem, setEditingItem] = useState(null);
   const [restock, setRestock] = useState({ item_id: '', qty: 1, source: 'proveedor', cost: '', notes: '' });
   const [withdrawal, setWithdrawal] = useState({ item_id: '', qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' });
-  const [moveData, setMoveData] = useState({ item_id: '', qty: 1, destination: '', recipient_name: '', notes: '' });
+  const [moveData, setMoveData] = useState({ item_id: '', destination_id: '', qty: 1, recipient_name: '', notes: '' });
   const [eventData, setEventData] = useState({ event_name: '', event_date: '', carried_by: '', notes: '' });
+
+  const role = profile?.role || 'none';
+  const isStaff = role === 'admin' || role === 'editor';
+  const isPunto = role === 'punto';
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // Perfil (rol y depósito asignado)
   useEffect(() => {
-    if (!session) return;
-    loadData();
-    const channel = supabase.channel('neostar-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'items' }, loadData)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'restocks' }, loadData)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'withdrawals' }, loadData)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'movements' }, loadData)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, loadData)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'event_items' }, loadData)
-      .subscribe();
-    return () => supabase.removeChannel(channel);
+    if (!session) { setProfile(undefined); return; }
+    supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle()
+      .then(({ data }) => {
+        setProfile(data || null);
+        if (data?.role === 'punto') setTab('mideposito');
+      });
   }, [session]);
 
-  async function loadData() {
-    setLoading(true);
-    setError('');
-
-    const [itemsRes, restocksRes, withdrawalsRes, movementsRes, eventsRes, eventItemsRes, destRes] = await Promise.all([
-      supabase.from('items').select('*').order('name'),
-      supabase.from('restocks').select('*, items(name)').order('created_at', { ascending: false }).limit(100),
-      supabase.from('withdrawals').select('*, items(name)').order('created_at', { ascending: false }).limit(100),
-      supabase.from('movements').select('*, items(name)').order('created_at', { ascending: false }).limit(100),
-      supabase.from('events').select('*').order('event_date', { ascending: false }),
-      supabase.from('event_items').select('*, items(name), events(event_name)').order('created_at', { ascending: false }),
-      supabase.from('destinations').select('*').order('name')
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    const errs = [];
+    const q = async (promise) => {
+      const { data, error: e } = await promise;
+      if (e) errs.push(e.message);
+      return data || [];
+    };
+    const [it, ds, dst, ps, mv] = await Promise.all([
+      q(supabase.from('items').select('*').eq('active', true).order('name')),
+      q(supabase.from('destinations').select('*').order('name')),
+      q(supabase.from('destination_stock').select('*')),
+      q(supabase.from('point_restock_status').select('*')),
+      q(supabase.from('movements').select('*, items(name)').order('created_at', { ascending: false }).limit(300))
     ]);
+    setItems(it); setDestinations(ds); setDestStock(dst); setPointStatus(ps); setMovements(mv);
 
-    if (itemsRes.error) setError(itemsRes.error.message);
-    setItems(itemsRes.data || []);
-    setRestocks(restocksRes.data || []);
-    setWithdrawals(withdrawalsRes.data || []);
-    setMovements(movementsRes.data || []);
-    setEvents(eventsRes.data || []);
-    setEventItems(eventItemsRes.data || []);
-    setDestinations(destRes.data || []);
+    if (profile?.role !== 'punto') {
+      const [rs, wd, ev, evi] = await Promise.all([
+        q(supabase.from('restocks').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
+        q(supabase.from('withdrawals').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
+        q(supabase.from('events').select('*').order('event_date', { ascending: false })),
+        q(supabase.from('event_items').select('*, items(name), events(event_name)').order('created_at', { ascending: false }))
+      ]);
+      setRestocks(rs); setWithdrawals(wd); setEvents(ev); setEventItems(evi);
+    }
+    setError(errs[0] || '');
     setLoading(false);
-  }
+  }, [profile]);
+
+  useEffect(() => {
+    if (!session || !profile) return;
+    loadData();
+    const reload = () => loadData(true);
+    let ch = supabase.channel('neostar-live');
+    ['items', 'restocks', 'withdrawals', 'movements', 'events', 'event_items', 'destination_stock'].forEach((table) => {
+      ch = ch.on('postgres_changes', { event: '*', schema: 'public', table }, reload);
+    });
+    ch.subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [session, profile, loadData]);
+
+  // Depósito seleccionado por defecto
+  useEffect(() => {
+    if (!destinations.length) return;
+    if (isPunto) setSelectedDest(profile.destination_id || '');
+    else if (!selectedDest) setSelectedDest(destinations[0].id);
+  }, [destinations, isPunto, profile, selectedDest]);
 
   async function handleSignIn(e) {
     e.preventDefault();
+    setError('');
     const { error: err } = await supabase.auth.signInWithPassword({
       email: e.currentTarget.email.value,
       password: e.currentTarget.password.value
@@ -110,163 +164,200 @@ export default function App() {
     if (err) setError(err.message);
   }
 
+  // Ejecuta una operación del servidor, muestra errores/avisos y refresca
+  async function run(promise, okMessage, onOk) {
+    setError(''); setNotice('');
+    const { data, error: err } = await promise;
+    if (err) { setError(err.message); return false; }
+    setModal(null);
+    if (okMessage) setNotice(typeof okMessage === 'function' ? okMessage(data) : okMessage);
+    if (onOk) onOk(data);
+    loadData(true);
+    return true;
+  }
+
   async function saveItem(e) {
     e.preventDefault();
-    setError('');
     if (!form.name.trim()) { setError('Nombre obligatorio'); return; }
-
-    const payload = {
+    const base = {
       name: form.name.trim(),
-      sku: form.sku.trim() || null,
+      sku: form.sku?.trim() || null,
       category: form.category,
-      subcategory: form.subcategory,
-      brand: form.brand || 'Genérico',
       kind: form.kind,
-      occasion: form.occasion,
-      stock_nucleo: Number(form.stock_nucleo) || 0,
-      stock_sf: Number(form.stock_sf) || 0,
-      stock_canada: Number(form.stock_canada) || 0,
-      stock_funes: Number(form.stock_funes) || 0,
+      brand: form.brand || 'Genérico',
+      occasion: form.category === 'Regalos' ? (form.occasion || null) : null,
       reorder_nucleo: Number(form.reorder_nucleo) || 0,
-      reorder_sf: Number(form.reorder_sf) || 0,
       lead_time_days: Number(form.lead_time_days) || 0
     };
-
-    const result = editingItem
-      ? await supabase.from('items').update(payload).eq('id', editingItem)
-      : await supabase.from('items').insert([payload]);
-
-    if (result.error) { setError(result.error.message); return; }
-    setShowItemModal(false);
-    setForm(emptyItem);
-    setEditingItem(null);
-    loadData();
+    // El stock NO se edita acá: al crear se carga el inicial; después solo con Ingreso/Retiro/Movimiento/Ajuste.
+    const payload = editingItem ? base : { ...base, stock_nucleo: Number(form.stock_nucleo) || 0 };
+    const req = editingItem
+      ? supabase.from('items').update(payload).eq('id', editingItem)
+      : supabase.from('items').insert([payload]);
+    const ok = await run(req, editingItem ? 'Material actualizado' : 'Material creado');
+    if (ok) { setForm(emptyItem); setEditingItem(null); }
   }
 
-  async function saveRestock(e) {
+  function deleteItem(item) {
+    if (!window.confirm(`¿Eliminar "${item.name}"?\n\nSi ya tuvo movimientos se archiva (deja de verse pero se conserva el historial). Tiene que estar en 0.`)) return;
+    run(supabase.rpc('delete_item', { p_item_id: item.id }), (res) => `Material ${res}`);
+  }
+
+  function saveRestock(e) {
     e.preventDefault();
-    setError('');
-    if (!restock.item_id || restock.qty < 1) { setError('Falta material o cantidad'); return; }
-
-    const { error: err } = await supabase.rpc('register_restock', {
-      p_item_id: restock.item_id,
-      p_qty: Number(restock.qty),
-      p_source: restock.source,
-      p_cost: restock.cost ? Number(restock.cost) : null,
-      p_person: session?.user?.email,
-      p_notes: restock.notes
-    });
-
-    if (err) { setError(err.message); return; }
-    setActiveModal(null);
-    setRestock({ item_id: '', qty: 1, source: 'proveedor', cost: '', notes: '' });
-    loadData();
+    if (!restock.item_id || Number(restock.qty) < 1) { setError('Falta material o cantidad'); return; }
+    run(supabase.rpc('register_restock', {
+      p_item_id: restock.item_id, p_qty: Number(restock.qty), p_source: restock.source,
+      p_cost: restock.cost ? Number(restock.cost) : null, p_notes: restock.notes || null
+    }), 'Ingreso registrado', () => setRestock({ item_id: '', qty: 1, source: 'proveedor', cost: '', notes: '' }));
   }
 
-  async function saveWithdrawal(e) {
+  function saveWithdrawal(e) {
     e.preventDefault();
-    setError('');
-    if (!withdrawal.item_id || withdrawal.qty < 1 || !withdrawal.reason_detail.trim()) {
-      setError('Falta información'); return;
-    }
-    if (withdrawal.reason_type === 'incidencia_cliente' && (!withdrawal.recipient_last_name.trim() || !withdrawal.vehicle_plate.trim())) {
-      setError('Para incidencia: apellido y patente obligatorios'); return;
-    }
-
-    const { error: err } = await supabase.rpc('register_withdrawal', {
-      p_item_id: withdrawal.item_id,
-      p_qty: Number(withdrawal.qty),
-      p_reason_type: withdrawal.reason_type,
-      p_reason_detail: withdrawal.reason_detail.trim(),
-      p_recipient_last_name: withdrawal.recipient_last_name.trim() || null,
-      p_vehicle_plate: withdrawal.vehicle_plate.trim() || null,
-      p_person: session?.user?.email,
-      p_notes: withdrawal.notes
-    });
-
-    if (err) { setError(err.message); return; }
-    setActiveModal(null);
-    setWithdrawal({ item_id: '', qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' });
-    loadData();
+    const w = withdrawal;
+    if (!w.item_id || Number(w.qty) < 1 || !w.reason_detail.trim()) { setError('Falta información'); return; }
+    run(supabase.rpc('register_withdrawal', {
+      p_item_id: w.item_id, p_qty: Number(w.qty), p_reason_type: w.reason_type, p_reason_detail: w.reason_detail.trim(),
+      p_recipient_last_name: w.recipient_last_name.trim() || null, p_vehicle_plate: w.vehicle_plate.trim() || null,
+      p_notes: w.notes || null
+    }), 'Retiro registrado', () => setWithdrawal({ item_id: '', qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' }));
   }
 
-  async function saveMovement(e) {
+  function saveMovement(e) {
     e.preventDefault();
-    setError('');
-    if (!moveData.item_id || moveData.qty < 1 || !moveData.destination) {
-      setError('Falta información'); return;
-    }
-
-    const { error: err } = await supabase.rpc('register_movement_transfer', {
-      p_item_id: moveData.item_id,
-      p_qty: Number(moveData.qty),
-      p_destination: moveData.destination,
-      p_recipient_name: moveData.recipient_name || null,
-      p_person: session?.user?.email,
-      p_notes: moveData.notes
-    });
-
-    if (err) { setError(err.message); return; }
-    setActiveModal(null);
-    setMoveData({ item_id: '', qty: 1, destination: '', recipient_name: '', notes: '' });
-    loadData();
+    if (!moveData.item_id || !moveData.destination_id || Number(moveData.qty) < 1) { setError('Falta información'); return; }
+    run(supabase.rpc('send_to_destination', {
+      p_item_id: moveData.item_id, p_destination_id: moveData.destination_id, p_qty: Number(moveData.qty),
+      p_recipient_name: moveData.recipient_name || null, p_notes: moveData.notes || null
+    }), 'Envío registrado. Queda "en camino" hasta que lo reciban.', () => setMoveData({ item_id: '', destination_id: '', qty: 1, recipient_name: '', notes: '' }));
   }
 
-  async function saveEvent(e) {
+  function saveReception(e) {
     e.preventDefault();
-    setError('');
-    if (!eventData.event_name.trim() || !eventData.event_date || !eventData.carried_by.trim()) {
-      setError('Falta información del evento'); return;
-    }
-
-    const { error: err } = await supabase.rpc('open_event', {
-      p_event_name: eventData.event_name.trim(),
-      p_event_date: eventData.event_date,
-      p_carried_by: eventData.carried_by.trim(),
-      p_notes: eventData.notes
-    });
-
-    if (err) { setError(err.message); return; }
-    setActiveModal(null);
-    setEventData({ event_name: '', event_date: '', carried_by: '', notes: '' });
-    loadData();
+    const m = modal.movement;
+    run(supabase.rpc('confirm_reception', {
+      p_movement_id: m.id, p_qty_received: Number(modal.qty), p_notes: modal.notes || null
+    }), 'Recepción confirmada: el stock ya figura en el depósito');
   }
 
-  const alerts = useMemo(() =>
-    items.filter(x => x.kind === 'consumible' && (
-      (Number(x.stock_nucleo) || 0) <= (Number(x.reorder_nucleo) || 0) ||
-      (Number(x.stock_sf) || 0) <= (Number(x.reorder_sf) || 0)
-    )), [items]);
+  function savePointWithdrawal(e) {
+    e.preventDefault();
+    const w = modal;
+    if (Number(w.qty) < 1 || !w.reason_detail?.trim()) { setError('Falta información'); return; }
+    run(supabase.rpc('register_point_withdrawal', {
+      p_destination_id: w.destination_id, p_item_id: w.item_id, p_qty: Number(w.qty), p_reason_type: w.reason_type,
+      p_reason_detail: w.reason_detail.trim(), p_recipient_last_name: w.recipient_last_name?.trim() || null,
+      p_vehicle_plate: w.vehicle_plate?.trim() || null, p_notes: w.notes || null
+    }), 'Entrega registrada');
+  }
+
+  function savePointStockIn(e) {
+    e.preventDefault();
+    if (!modal.item_id || Number(modal.qty) < 1) { setError('Falta material o cantidad'); return; }
+    run(supabase.rpc('register_point_stock_in', {
+      p_destination_id: modal.destination_id, p_item_id: modal.item_id, p_qty: Number(modal.qty), p_notes: modal.notes || null
+    }), 'Carga registrada');
+  }
+
+  function saveMin(e) {
+    e.preventDefault();
+    run(supabase.rpc('set_point_min', {
+      p_destination_id: modal.destination_id, p_item_id: modal.item_id, p_min: Number(modal.min)
+    }), 'Punto de restock actualizado');
+  }
+
+  function saveAdjust(e) {
+    e.preventDefault();
+    if (!modal.reason?.trim()) { setError('El motivo del ajuste es obligatorio'); return; }
+    run(supabase.rpc('adjust_stock', {
+      p_item_id: modal.item_id, p_destination_id: modal.destination_id || null,
+      p_new_qty: Number(modal.new_qty), p_reason: modal.reason.trim()
+    }), 'Ajuste registrado');
+  }
+
+  function saveEvent(e) {
+    e.preventDefault();
+    if (!eventData.event_name.trim() || !eventData.event_date || !eventData.carried_by.trim()) { setError('Falta información del evento'); return; }
+    run(supabase.rpc('open_event', {
+      p_event_name: eventData.event_name.trim(), p_event_date: eventData.event_date,
+      p_carried_by: eventData.carried_by.trim(), p_notes: eventData.notes || null
+    }), 'Evento creado', () => setEventData({ event_name: '', event_date: '', carried_by: '', notes: '' }));
+  }
+
+  // ---------- Derivados ----------
+  const destById = useMemo(() => Object.fromEntries(destinations.map(d => [d.id, d])), [destinations]);
+  const itemById = useMemo(() => Object.fromEntries(items.map(i => [i.id, i])), [items]);
+
+  const inDepots = useMemo(() => {
+    const acc = {};
+    destStock.forEach(r => { acc[r.item_id] = (acc[r.item_id] || 0) + r.qty; });
+    return acc;
+  }, [destStock]);
+
+  const inTransit = useMemo(() =>
+    movements.filter(m => m.type === 'envio_destino' && m.estado === 'en_transito'), [movements]);
+
+  const centralAlerts = useMemo(() =>
+    items.filter(x => x.kind === 'consumible' && Number(x.reorder_nucleo) > 0 && Number(x.stock_nucleo) <= Number(x.reorder_nucleo)),
+  [items]);
+
+  const pointAlerts = useMemo(() => pointStatus.filter(p => p.status !== 'ok'), [pointStatus]);
 
   const filteredItems = useMemo(() =>
     items.filter(item => {
-      const hayQuery = `${item.name} ${item.sku || ''} ${item.brand || ''}`
-        .toLowerCase().includes(query.toLowerCase());
-      const hayCategoria = categoryFilter === 'Todas' || item.category === categoryFilter;
-      const hayMarca = brandFilter === 'Todas' || item.brand === brandFilter;
-      return hayQuery && hayCategoria && hayMarca;
+      const hayQuery = `${item.name} ${item.sku || ''} ${item.brand || ''}`.toLowerCase().includes(query.toLowerCase());
+      return hayQuery
+        && (categoryFilter === 'Todas' || item.category === categoryFilter)
+        && (brandFilter === 'Todas' || item.brand === brandFilter);
     }), [items, query, categoryFilter, brandFilter]);
 
+  const history = useMemo(() => {
+    const rows = [];
+    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a Depo Central', item: r.items?.name, qty: r.qty, detalle: [r.source, r.cost ? `$${r.cost}` : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
+    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: 'Retiro de Depo Central', item: w.items?.name, qty: w.qty, detalle: [w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
+    movements.forEach(m => {
+      if (m.type === 'stock_inicial' || m.type === 'compra') {
+        rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type], item: m.items?.name, qty: m.qty, detalle: m.notes || '', quien: m.person });
+        return;
+      }
+      let detalle = '';
+      if (m.type === 'envio_destino') detalle = `→ ${m.destination || destById[m.destino_id]?.name || ''} · ${STATE_LABELS[m.estado] || m.estado}${m.recipient_name ? ' · recibe ' + m.recipient_name : ''}${m.received_by_name ? ' · recibió ' + m.received_by_name : ''}`;
+      else if (m.type === 'entrega') detalle = [m.origen, m.reason_detail, m.recipient_last_name, m.vehicle_plate].filter(Boolean).join(' · ');
+      else if (m.type === 'ingreso_punto') detalle = [m.destination, m.notes].filter(Boolean).join(' · ');
+      else if (m.type === 'ajuste') detalle = [m.origen, m.notes, m.reason_detail].filter(Boolean).join(' · ');
+      else detalle = m.notes || '';
+      rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type] || m.type, item: m.items?.name, qty: m.qty, detalle, quien: m.person });
+    });
+    return rows.sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 300);
+  }, [restocks, withdrawals, movements, destById]);
+
+  // ---------- Render ----------
   if (!session) return <Login onSubmit={handleSignIn} error={error} />;
+  if (profile === undefined) return <div className="login-screen"><div className="login-card">Cargando...</div></div>;
+  if (!profile || role === 'none') return <NoAccess onSignOut={() => supabase.auth.signOut()} />;
+  if (isPunto && !profile.destination_id) return <NoAccess onSignOut={() => supabase.auth.signOut()} message="Tu usuario todavía no tiene un depósito asignado. Pedile a un administrador que lo configure." />;
+
+  const nav = isPunto
+    ? [['mideposito', 'Mi depósito'], ['recepcion', `Por recibir${inTransit.length ? ` (${inTransit.length})` : ''}`], ['historial', 'Historial']]
+    : [
+        ['dashboard', 'Dashboard'], ['stock', 'Materiales'], ['depositos', 'Depósitos y puntos'],
+        ['recepcion', `En camino${inTransit.length ? ` (${inTransit.length})` : ''}`],
+        ['ingresos', 'Ingresos'], ['retiros', 'Retiros'], ['movimientos', 'Movimientos'], ['eventos', 'Eventos'], ['historial', 'Historial']
+      ];
+
+  const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: isPunto ? 'Por recibir' : 'Envíos en camino', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Movimientos', eventos: 'Eventos', historial: 'Historial' };
+  const myDest = destById[selectedDest];
+  const roleLabel = { admin: 'Administrador', editor: 'Editor', punto: 'Depósito', viewer: 'Solo lectura' }[role];
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">NEOSTAR<span>Control de stock</span></div>
-        {[
-          ['dashboard', 'Dashboard'],
-          ['stock', 'Materiales'],
-          ['ingresos', 'Ingresos'],
-          ['retiros', 'Retiros'],
-          ['movimientos', 'Movimientos'],
-          ['eventos', 'Eventos'],
-          ['historial', 'Historial']
-        ].map(([key, label]) => (
-          <button key={key} className={tab === key ? 'nav-btn active' : 'nav-btn'} onClick={() => setTab(key)}>
-            {label}
-          </button>
+        {nav.map(([key, label]) => (
+          <button key={key} className={tab === key ? 'nav-btn active' : 'nav-btn'} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>
         ))}
         <div className="sidebar-footer">
+          <div className="whoami"><strong>{profile.full_name || session.user.email}</strong><small>{roleLabel}{isPunto && myDest ? ` · ${myDest.name}` : ''}</small></div>
           <button className="logout-btn" onClick={() => supabase.auth.signOut()}>Cerrar sesión</button>
         </div>
       </aside>
@@ -275,45 +366,60 @@ export default function App() {
         <header className="topbar">
           <div>
             <small>Gestión de inventario</small>
-            <h1>
-              {tab === 'dashboard' && 'Dashboard'}
-              {tab === 'stock' && 'Materiales'}
-              {tab === 'ingresos' && 'Ingresos'}
-              {tab === 'retiros' && 'Retiros'}
-              {tab === 'movimientos' && 'Movimientos'}
-              {tab === 'eventos' && 'Eventos'}
-              {tab === 'historial' && 'Historial'}
-            </h1>
+            <h1>{titles[tab]}</h1>
           </div>
-          {tab === 'stock' && <button className="primary-btn" onClick={() => { setEditingItem(null); setForm(emptyItem); setShowItemModal(true); }}>+ Nuevo material</button>}
-          {tab === 'ingresos' && <button className="primary-btn" onClick={() => setActiveModal('restock')}>+ Registrar ingreso</button>}
-          {tab === 'retiros' && <button className="primary-btn" onClick={() => setActiveModal('withdrawal')}>+ Registrar retiro</button>}
-          {tab === 'movimientos' && <button className="primary-btn" onClick={() => setActiveModal('movement')}>+ Nuevo movimiento</button>}
-          {tab === 'eventos' && <button className="primary-btn" onClick={() => setActiveModal('event')}>+ Nuevo evento</button>}
+          <div className="topbar-actions">
+            {isStaff && tab === 'stock' && <button className="primary-btn" onClick={() => { setEditingItem(null); setForm(emptyItem); setModal({ type: 'item' }); }}>+ Nuevo material</button>}
+            {isStaff && tab === 'ingresos' && <button className="primary-btn" onClick={() => setModal({ type: 'restock' })}>+ Registrar ingreso</button>}
+            {isStaff && tab === 'retiros' && <button className="primary-btn" onClick={() => setModal({ type: 'withdrawal' })}>+ Registrar retiro</button>}
+            {isStaff && tab === 'movimientos' && <button className="primary-btn" onClick={() => setModal({ type: 'movement' })}>+ Enviar a depósito</button>}
+            {isStaff && tab === 'eventos' && <button className="primary-btn" onClick={() => setModal({ type: 'event' })}>+ Nuevo evento</button>}
+          </div>
         </header>
 
         {error && <div className="error-banner">{error}</div>}
+        {notice && <div className="notice-banner">{notice}</div>}
 
-        {loading ? <div className="card">Cargando...</div> : 
-          tab === 'dashboard' ? <Dashboard items={items} alerts={alerts} movements={movements} withdrawals={withdrawals} restocks={restocks} events={events} /> :
-          tab === 'stock' ? <StockTable items={filteredItems} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter} onEdit={(item) => { setEditingItem(item.id); setForm({...item}); setShowItemModal(true); }} onDelete={(item) => { if (window.confirm(`¿Eliminar ${item.name}?`)) supabase.from('items').delete().eq('id', item.id).then(loadData); }} /> :
+        {loading ? <div className="card">Cargando...</div> :
+          tab === 'dashboard' ? <Dashboard items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} events={events} history={history} onGo={setTab} /> :
+          tab === 'stock' ? <StockTable items={filteredItems} inDepots={inDepots} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter}
+              onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', sku: item.sku || '' }); setModal({ type: 'item' }); }}
+              onAdjust={(item) => setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reason: '', place: 'Depo Central' })}
+              onDelete={deleteItem} /> :
+          tab === 'depositos' || tab === 'mideposito' ? (
+            <DepositoView
+              isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={setSelectedDest}
+              rows={destStock.filter(r => r.destination_id === selectedDest)} status={pointStatus.filter(p => p.destination_id === selectedDest)}
+              itemById={itemById} inTransit={inTransit.filter(m => m.destino_id === selectedDest)} onGoReceive={() => setTab('recepcion')}
+              onDeliver={(r) => setModal({ type: 'pwithdraw', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' })}
+              onStockIn={() => setModal({ type: 'pstockin', destination_id: selectedDest, item_id: '', qty: 1, notes: '' })}
+              onMin={(r) => setModal({ type: 'pmin', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, min: r.min_qty })}
+              onAdjust={(r) => setModal({ type: 'adjust', item_id: r.item_id, name: itemById[r.item_id]?.name, destination_id: selectedDest, current: r.qty, new_qty: r.qty, reason: '', place: destById[selectedDest]?.name })} />
+          ) :
+          tab === 'recepcion' ? <ReceptionTable rows={inTransit} canReceive={isStaff || isPunto} onReceive={(m) => setModal({ type: 'receive', movement: m, qty: m.qty, notes: '' })} /> :
           tab === 'ingresos' ? <RestockTable rows={restocks} /> :
           tab === 'retiros' ? <WithdrawalTable rows={withdrawals} /> :
-          tab === 'movimientos' ? <MovementTable rows={movements} /> :
-          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} items={items} /> :
-          tab === 'historial' ? <HistoryTab restocks={restocks} withdrawals={withdrawals} movements={movements} /> : null
+          tab === 'movimientos' ? <MovementTable rows={movements.filter(m => m.type === 'envio_destino')} /> :
+          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} /> :
+          tab === 'historial' ? <HistoryTab rows={history} /> : null
         }
       </main>
 
-      {showItemModal && <ItemModal form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setShowItemModal(false)} onSubmit={saveItem} />}
-      
-      {activeModal === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} onClose={() => setActiveModal(null)} onSubmit={saveRestock} />}
-      {activeModal === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} onClose={() => setActiveModal(null)} onSubmit={saveWithdrawal} />}
-      {activeModal === 'movement' && <MovementModal moveData={moveData} setMoveData={setMoveData} items={items} onClose={() => setActiveModal(null)} onSubmit={saveMovement} />}
-      {activeModal === 'event' && <EventModal eventData={eventData} setEventData={setEventData} onClose={() => setActiveModal(null)} onSubmit={saveEvent} />}
+      {modal?.type === 'item' && <ItemModal form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setModal(null)} onSubmit={saveItem} />}
+      {modal?.type === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} onClose={() => setModal(null)} onSubmit={saveRestock} />}
+      {modal?.type === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} onClose={() => setModal(null)} onSubmit={saveWithdrawal} />}
+      {modal?.type === 'movement' && <MovementModal moveData={moveData} setMoveData={setMoveData} items={items} destinations={destinations} onClose={() => setModal(null)} onSubmit={saveMovement} />}
+      {modal?.type === 'event' && <EventModal eventData={eventData} setEventData={setEventData} onClose={() => setModal(null)} onSubmit={saveEvent} />}
+      {modal?.type === 'receive' && <ReceiveModal modal={modal} setModal={setModal} item={modal.movement.items?.name} onClose={() => setModal(null)} onSubmit={saveReception} />}
+      {modal?.type === 'pwithdraw' && <PointWithdrawModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={savePointWithdrawal} />}
+      {modal?.type === 'pstockin' && <PointStockInModal modal={modal} setModal={setModal} items={items} onClose={() => setModal(null)} onSubmit={savePointStockIn} />}
+      {modal?.type === 'pmin' && <PointMinModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveMin} />}
+      {modal?.type === 'adjust' && <AdjustModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveAdjust} />}
     </div>
   );
 }
+
+/* ---------------- Pantallas ---------------- */
 
 function Login({ onSubmit, error }) {
   return (
@@ -330,26 +436,55 @@ function Login({ onSubmit, error }) {
   );
 }
 
-function Dashboard({ items, alerts, movements, withdrawals, restocks, events }) {
+function NoAccess({ onSignOut, message }) {
+  return (
+    <div className="login-screen">
+      <div className="login-card">
+        <div className="brand dark-brand">NEOSTAR<span>Control de stock</span></div>
+        <h2>Sin acceso</h2>
+        <p className="muted">{message || 'Tu usuario todavía no tiene permisos asignados. Pedile a un administrador que te dé acceso.'}</p>
+        <button className="primary-btn" onClick={onSignOut}>Cerrar sesión</button>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ items, centralAlerts, pointAlerts, inTransit, events, history, onGo }) {
+  const urgent = inTransit.filter(m => daysSince(m.created_at) > 5).length;
   return (
     <>
       <section className="stats-grid">
         <Stat label="Materiales" value={items.length} />
-        <Stat label="Alertas" value={alerts.length} tone="warning" />
+        <Stat label="Alertas de stock" value={centralAlerts.length + pointAlerts.length} tone="warning" />
+        <Stat label={urgent ? `Envíos en camino (${urgent} hace +5 días)` : 'Envíos en camino'} value={inTransit.length} tone={urgent ? 'warning' : ''} onClick={() => onGo('recepcion')} />
         <Stat label="Eventos abiertos" value={events.filter(e => e.status === 'abierto').length} />
-        <Stat label="Total stock" value={items.reduce((s, i) => s + (Number(i.stock_nucleo) || 0), 0)} />
       </section>
 
       <div className="two-col">
         <section className="card">
           <h2>Alertas</h2>
-          {alerts.length ? <table><thead><tr><th>Material</th><th>Central</th><th>Santa Fe</th></tr></thead><tbody>{alerts.slice(0, 5).map(i => <tr key={i.id}><td>{i.name}</td><td className="warn">{i.stock_nucleo || 0}</td><td className="warn">{i.stock_sf || 0}</td></tr>)}</tbody></table> : <p className="muted">Sin alertas</p>}
+          {centralAlerts.length + pointAlerts.length === 0 && <p className="muted">Sin alertas</p>}
+          {centralAlerts.length > 0 && (
+            <>
+              <h3 className="sub">Recomprar al proveedor (Depo Central)</h3>
+              <table><thead><tr><th>Material</th><th>Stock</th><th>Mínimo</th></tr></thead>
+                <tbody>{centralAlerts.slice(0, 8).map(i => <tr key={i.id}><td>{i.name}</td><td className="warn">{i.stock_nucleo}</td><td>{i.reorder_nucleo}</td></tr>)}</tbody></table>
+            </>
+          )}
+          {pointAlerts.length > 0 && (
+            <>
+              <h3 className="sub">Reponer en depósitos y puntos</h3>
+              <table><thead><tr><th>Depósito</th><th>Material</th><th>Stock</th><th>Reponer</th></tr></thead>
+                <tbody>{pointAlerts.slice(0, 8).map(p => <tr key={p.destination_id + p.item_id}><td>{p.destination_name}</td><td>{p.item_name}</td><td className="warn">{p.qty}</td><td>{p.suggested_qty > 0 ? `+${p.suggested_qty}` : '—'}</td></tr>)}</tbody></table>
+            </>
+          )}
         </section>
 
         <section className="card">
           <h2>Últimas operaciones</h2>
           <div className="timeline">
-            {[...restocks, ...withdrawals, ...movements].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 8).map(op => <div key={op.id} className="timeline-row"><strong>{op.items?.name || 'Item'}</strong><small>{new Date(op.created_at).toLocaleDateString('es-AR')}</small></div>)}
+            {history.slice(0, 8).map(op => <div key={op.id} className="timeline-row"><div><strong>{op.item || 'Material'}</strong><small>{op.tipo} · {op.qty}</small></div><small>{fmtDate(op.at)}</small></div>)}
+            {!history.length && <p className="muted">Todavía no hay movimientos</p>}
           </div>
         </section>
       </div>
@@ -357,22 +492,119 @@ function Dashboard({ items, alerts, movements, withdrawals, restocks, events }) 
   );
 }
 
-function Stat({ label, value, tone }) {
-  return <div className={`stat ${tone || ''}`}><strong>{value}</strong><span>{label}</span></div>;
+function Stat({ label, value, tone, onClick }) {
+  return <div className={`stat ${tone || ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}><strong>{value}</strong><span>{label}</span></div>;
 }
 
-function StockTable({ items, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onDelete }) {
+function StockTable({ items, inDepots, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete }) {
   return (
     <section className="card">
       <div className="card-head"><h2>Materiales</h2></div>
       <div className="filters-row">
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar..." />
-        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option>Todas</option>{['Indumentaria y textil', 'Bazar y estilo de vida', 'Accesorios y tecnología', 'Car care / accesorios de auto', 'Portapatentes', 'Portadocumentos', 'Stickers Domo', 'Regalos', 'Equipamiento de eventos', 'Otros'].map(c => <option key={c}>{c}</option>)}</select>
-        <select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}><option>Todas</option>{['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar', 'Genérico'].map(b => <option key={b}>{b}</option>)}</select>
+        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option>Todas</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+        <select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}><option>Todas</option><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select>
       </div>
       <table>
-        <thead><tr><th>Material</th><th>Categoría</th><th>Marca</th><th>Central</th><th>SF</th><th>Cañada</th><th>Funes</th><th></th></tr></thead>
-        <tbody>{items.map(i => <tr key={i.id}><td><strong>{i.name}</strong><small>{i.sku || 'Sin SKU'}</small></td><td>{i.category}</td><td>{i.brand}</td><td className={Number(i.stock_nucleo) <= Number(i.reorder_nucleo) ? 'warn' : ''}>{i.stock_nucleo || 0}</td><td>{i.stock_sf || 0}</td><td>{i.stock_canada || 0}</td><td>{i.stock_funes || 0}</td><td><button className="link-btn" onClick={() => onEdit(i)}>Editar</button> <button className="link-btn danger" onClick={() => onDelete(i)}>Eliminar</button></td></tr>)}</tbody>
+        <thead><tr><th>Material</th><th>Categoría</th><th>Marca</th><th>Depo Central</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
+        <tbody>
+          {items.map(i => {
+            const low = Number(i.reorder_nucleo) > 0 && Number(i.stock_nucleo) <= Number(i.reorder_nucleo);
+            return (
+              <tr key={i.id}>
+                <td><strong>{i.name}</strong><small>{i.sku || 'Sin SKU'}</small></td>
+                <td>{i.category}</td><td>{i.brand}</td>
+                <td className={low ? 'warn' : ''}>{i.stock_nucleo || 0}{Number(i.reorder_nucleo) > 0 && <small>mín. {i.reorder_nucleo}</small>}</td>
+                <td>{inDepots[i.id] || 0}</td>
+                {isStaff && <td className="actions-col">
+                  <button className="link-btn" onClick={() => onEdit(i)}>Editar</button>
+                  <button className="link-btn" onClick={() => onAdjust(i)}>Ajustar stock</button>
+                  <button className="link-btn danger" onClick={() => onDelete(i)}>Eliminar</button>
+                </td>}
+              </tr>
+            );
+          })}
+          {!items.length && <tr><td colSpan="6" className="muted">No hay materiales</td></tr>}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function DepositoView({ isPunto, canOperate, destinations, selectedDest, setSelectedDest, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onMin, onAdjust }) {
+  const statusByItem = Object.fromEntries(status.map(s => [s.item_id, s]));
+  const dest = destinations.find(d => d.id === selectedDest);
+  return (
+    <>
+      {!isPunto && (
+        <section className="card" style={{ marginBottom: 18 }}>
+          <label className="inline-label">Depósito / punto
+            <select value={selectedDest} onChange={e => setSelectedDest(e.target.value)}>
+              {destinations.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </label>
+        </section>
+      )}
+      {inTransit.length > 0 && (
+        <div className="notice-banner clickable" onClick={onGoReceive}>
+          Hay {inTransit.length} envío(s) en camino para {dest?.name || 'este depósito'}. Tocá acá para confirmarlos cuando lleguen.
+        </div>
+      )}
+      <section className="card">
+        <div className="card-head">
+          <h2>{dest?.name || 'Depósito'}</h2>
+          {canOperate && <button className="primary-btn" onClick={onStockIn}>+ Cargar stock</button>}
+        </div>
+        <p className="muted small">El stock sube cuando confirmás la recepción de un envío o cuando cargás stock propio. Baja con cada entrega. El punto de restock sugerido se calcula con tus entregas de los últimos 90 días.</p>
+        <table>
+          <thead><tr><th>Material</th><th>Stock</th><th>Punto de restock</th><th>Reponer</th><th>Estado</th>{canOperate && <th></th>}</tr></thead>
+          <tbody>
+            {rows.map(r => {
+              const s = statusByItem[r.item_id];
+              const st = s?.status || 'ok';
+              return (
+                <tr key={r.item_id}>
+                  <td><strong>{itemById[r.item_id]?.name || 'Material'}</strong><small>{itemById[r.item_id]?.category}</small></td>
+                  <td className={st !== 'ok' ? 'warn' : ''}>{r.qty}</td>
+                  <td>{s?.restock_point || r.min_qty || '—'}{r.min_qty > 0 && <small>mínimo cargado: {r.min_qty}</small>}</td>
+                  <td>{s?.suggested_qty > 0 && st !== 'ok' ? `+${s.suggested_qty}` : '—'}</td>
+                  <td><span className={`chip ${st}`}>{st === 'ok' ? 'OK' : st === 'sin_stock' ? 'Sin stock' : 'Reponer'}</span></td>
+                  {canOperate && <td className="actions-col">
+                    <button className="link-btn" disabled={r.qty < 1} onClick={() => onDeliver(r)}>Entregar</button>
+                    <button className="link-btn" onClick={() => onMin(r)}>Mínimo</button>
+                    <button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button>
+                  </td>}
+                </tr>
+              );
+            })}
+            {!rows.length && <tr><td colSpan="6" className="muted">Todavía no hay stock en este depósito. Cuando llegue un envío, confirmá la recepción y va a aparecer acá.</td></tr>}
+          </tbody>
+        </table>
+      </section>
+    </>
+  );
+}
+
+function ReceptionTable({ rows, canReceive, onReceive }) {
+  return (
+    <section className="card">
+      <h2>{canReceive ? 'Envíos pendientes de recepción' : 'Envíos en camino'}</h2>
+      <p className="muted small">Cuando llega la mercadería, confirmá la recepción: recién ahí se suma al stock del depósito. Si llegó distinta cantidad, indicá la cantidad real.</p>
+      <table>
+        <thead><tr><th>Enviado</th><th>Material</th><th>Cantidad</th><th>Destino</th><th>Recibe</th><th>Enviado por</th>{canReceive && <th></th>}</tr></thead>
+        <tbody>
+          {rows.map(m => {
+            const d = daysSince(m.created_at);
+            return (
+              <tr key={m.id}>
+                <td>{fmtDate(m.created_at)}<small className={d > 5 ? 'warn' : ''}>{d === 0 ? 'hoy' : `hace ${d} día(s)`}{d > 5 ? ' · urgente' : ''}</small></td>
+                <td>{m.items?.name}</td><td>{m.qty}</td><td>{m.destination}</td><td>{m.recipient_name || '—'}</td><td>{m.person}</td>
+                {canReceive && <td><button className="primary-btn small-btn" onClick={() => onReceive(m)}>Recibir</button></td>}
+              </tr>
+            );
+          })}
+          {!rows.length && <tr><td colSpan="7" className="muted">No hay envíos pendientes</td></tr>}
+        </tbody>
       </table>
     </section>
   );
@@ -384,7 +616,7 @@ function RestockTable({ rows }) {
       <h2>Ingresos de stock</h2>
       <table>
         <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Origen</th><th>Costo</th><th>Registrado por</th></tr></thead>
-        <tbody>{rows.map(r => <tr key={r.id}><td>{new Date(r.created_at).toLocaleDateString('es-AR')}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.source}</td><td>${r.cost || '—'}</td><td>{r.person}</td></tr>)}</tbody>
+        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.source}</td><td>{r.cost ? `$${r.cost}` : '—'}</td><td>{r.person}</td></tr>)}</tbody>
       </table>
     </section>
   );
@@ -393,10 +625,10 @@ function RestockTable({ rows }) {
 function WithdrawalTable({ rows }) {
   return (
     <section className="card">
-      <h2>Retiros / Uso</h2>
+      <h2>Retiros / Uso (Depo Central)</h2>
       <table>
-        <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Motivo</th><th>Cliente</th><th>Patente</th></tr></thead>
-        <tbody>{rows.map(r => <tr key={r.id}><td>{new Date(r.created_at).toLocaleDateString('es-AR')}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.reason_detail}</td><td>{r.recipient_last_name || '—'}</td><td>{r.vehicle_plate || '—'}</td></tr>)}</tbody>
+        <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Motivo</th><th>Cliente</th><th>Patente</th><th>Registrado por</th></tr></thead>
+        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.reason_detail}</td><td>{r.recipient_last_name || '—'}</td><td>{r.vehicle_plate || '—'}</td><td>{r.person}</td></tr>)}</tbody>
       </table>
     </section>
   );
@@ -405,16 +637,24 @@ function WithdrawalTable({ rows }) {
 function MovementTable({ rows }) {
   return (
     <section className="card">
-      <h2>Movimientos a otros depósitos</h2>
+      <h2>Envíos a depósitos y puntos</h2>
       <table>
-        <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Destino</th><th>Recibido por</th></tr></thead>
-        <tbody>{rows.map(r => <tr key={r.id}><td>{new Date(r.created_at).toLocaleDateString('es-AR')}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.destination}</td><td>{r.notes || '—'}</td></tr>)}</tbody>
+        <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Destino</th><th>Estado</th><th>Recibió</th><th>Enviado por</th></tr></thead>
+        <tbody>{rows.map(r => (
+          <tr key={r.id}>
+            <td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.destination}</td>
+            <td><span className={`chip ${r.estado}`}>{STATE_LABELS[r.estado] || r.estado}</span>{r.estado === 'recibido_con_diferencia' && <small>llegaron {r.qty_received} de {r.qty}</small>}</td>
+            <td>{r.received_by_name ? <>{r.received_by_name}<small>{fmtDateTime(r.received_at)}</small></> : '—'}</td>
+            <td>{r.person}</td>
+          </tr>))}
+          {!rows.length && <tr><td colSpan="7" className="muted">Todavía no hay envíos</td></tr>}
+        </tbody>
       </table>
     </section>
   );
 }
 
-function EventsTable({ events, eventItems, items }) {
+function EventsTable({ events, eventItems }) {
   return (
     <section className="card">
       <h2>Eventos</h2>
@@ -423,11 +663,11 @@ function EventsTable({ events, eventItems, items }) {
           {events.map(e => (
             <div key={e.id} className="event-card">
               <h3>{e.event_name}</h3>
-              <p><strong>Fecha:</strong> {new Date(e.event_date).toLocaleDateString('es-AR')} | <strong>Llevado por:</strong> {e.carried_by} | <strong>Estado:</strong> <span className={`badge ${e.status}`}>{e.status}</span></p>
-              <table style={{marginTop: '10px'}}>
+              <p><strong>Fecha:</strong> {fmtDate(e.event_date)} | <strong>Llevado por:</strong> {e.carried_by} | <strong>Estado:</strong> <span className={`chip ${e.status}`}>{e.status}</span></p>
+              <table style={{ marginTop: '10px' }}>
                 <thead><tr><th>Material</th><th>Cantidad</th><th>Remito salida</th><th>Remito llegada</th><th>Usado</th></tr></thead>
                 <tbody>
-                  {eventItems.filter(ei => ei.event_id === e.id).map(ei => <tr key={ei.id}><td>{ei.items?.name}</td><td>{ei.qty_allocated}</td><td className={ei.remito_salida_date ? 'ok' : 'pending'}>{ei.remito_salida_date ? '✓' : '✗'}</td><td className={ei.remito_llegada_ok ? 'ok' : 'pending'}>{ei.remito_llegada_ok ? '✓' : '✗'}</td><td>{ei.qty_used}</td></tr>)}
+                  {eventItems.filter(ei => ei.event_id === e.id).map(ei => <tr key={ei.id}><td>{ei.items?.name}</td><td>{ei.qty_allocated}</td><td className={ei.remito_salida_date ? 'ok' : 'pending'}>{ei.remito_salida_date ? '✓' : '✗'}</td><td className={ei.remito_llegada_ok ? 'ok' : 'pending'}>{ei.remito_llegada_ok ? '✓' : '✗'}</td><td>{ei.remito_llegada_ok ? ei.qty_used : '—'}</td></tr>)}
                 </tbody>
               </table>
             </div>
@@ -438,110 +678,193 @@ function EventsTable({ events, eventItems, items }) {
   );
 }
 
-function HistoryTab({ restocks, withdrawals, movements }) {
-  const all = [...restocks, ...withdrawals, ...movements].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+function HistoryTab({ rows }) {
   return (
     <section className="card">
       <h2>Historial completo</h2>
       <table>
         <thead><tr><th>Fecha</th><th>Tipo</th><th>Material</th><th>Cantidad</th><th>Detalle</th><th>Usuario</th></tr></thead>
-        <tbody>{all.slice(0, 200).map((op, i) => <tr key={i}><td>{new Date(op.created_at).toLocaleDateString('es-AR')}</td><td>{op.source ? 'Ingreso' : op.reason_type ? 'Retiro' : 'Movimiento'}</td><td>{op.items?.name}</td><td>{op.qty}</td><td>{op.reason_detail || op.notes || op.source || '—'}</td><td>{op.person}</td></tr>)}</tbody>
+        <tbody>{rows.map(op => <tr key={op.id}><td>{fmtDateTime(op.at)}</td><td>{op.tipo}</td><td>{op.item}</td><td>{op.qty}</td><td>{op.detalle || '—'}</td><td>{op.quien}</td></tr>)}
+          {!rows.length && <tr><td colSpan="6" className="muted">Sin movimientos</td></tr>}</tbody>
       </table>
     </section>
   );
 }
 
-function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
-  const set = (k, v) => setForm(p => ({...p, [k]: v}));
+/* ---------------- Modales ---------------- */
+
+function Modal({ title, onClose, onSubmit, submitLabel, children }) {
   return (
     <div className="modal-overlay">
       <form className="modal" onSubmit={onSubmit}>
-        <div className="card-head"><h2>{editing ? 'Editar' : 'Nuevo'} material</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
-        <div className="form-grid">
-          <label>Nombre *<input required value={form.name} onChange={e => set('name', e.target.value)} /></label>
-          <label>SKU<input value={form.sku} onChange={e => set('sku', e.target.value.toUpperCase())} /></label>
-          <label>Categoría<select value={form.category} onChange={e => set('category', e.target.value)}>{['Indumentaria y textil', 'Bazar y estilo de vida', 'Accesorios y tecnología', 'Car care / accesorios de auto', 'Portapatentes', 'Portadocumentos', 'Stickers Domo', 'Regalos', 'Equipamiento de eventos', 'Otros'].map(c => <option key={c}>{c}</option>)}</select></label>
-          <label>Marca<select value={form.brand} onChange={e => set('brand', e.target.value)}><option>Genérico</option>{['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar'].map(b => <option key={b}>{b}</option>)}</select></label>
-          <label>Stock Central<input type="number" min="0" value={form.stock_nucleo} onChange={e => set('stock_nucleo', e.target.value)} /></label>
-          <label>Mín. Central<input type="number" min="0" value={form.reorder_nucleo} onChange={e => set('reorder_nucleo', e.target.value)} /></label>
-        </div>
-        <div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button><button type="submit" className="primary-btn">Guardar</button></div>
+        <div className="card-head"><h2>{title}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
+        {children}
+        <div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button><button type="submit" className="primary-btn">{submitLabel}</button></div>
       </form>
     </div>
   );
 }
 
-function RestockModal({ restock, setRestock, items, onClose, onSubmit }) {
-  const set = (k, v) => setRestock(p => ({...p, [k]: v}));
+function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
   return (
-    <div className="modal-overlay">
-      <form className="modal" onSubmit={onSubmit}>
-        <div className="card-head"><h2>Registrar ingreso</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
-        <div className="form-grid">
-          <label>Material *<select required value={restock.item_id} onChange={e => set('item_id', e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
-          <label>Cantidad *<input type="number" min="1" required value={restock.qty} onChange={e => set('qty', e.target.value)} /></label>
-          <label>Origen<select value={restock.source} onChange={e => set('source', e.target.value)}><option value="proveedor">Proveedor</option><option value="devolucion">Devolución</option><option value="ajuste">Ajuste</option></select></label>
-          <label>Costo<input type="number" step="0.01" value={restock.cost} onChange={e => set('cost', e.target.value)} /></label>
-        </div>
-        <div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button><button type="submit" className="primary-btn">Guardar ingreso</button></div>
-      </form>
-    </div>
+    <Modal title={`${editing ? 'Editar' : 'Nuevo'} material`} onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar">
+      <div className="form-grid">
+        <label>Nombre *<input required value={form.name} onChange={e => set('name', e.target.value)} /></label>
+        <label>SKU<input value={form.sku} onChange={e => set('sku', e.target.value.toUpperCase())} /></label>
+        <label>Tipo<select value={form.kind} onChange={e => set('kind', e.target.value)}><option value="consumible">Consumible (se entrega)</option><option value="equipamiento">Equipamiento (se presta y vuelve)</option></select></label>
+        <label>Categoría<select value={form.category} onChange={e => set('category', e.target.value)}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></label>
+        <label>Marca<select value={form.brand} onChange={e => set('brand', e.target.value)}><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select></label>
+        {form.category === 'Regalos' && (
+          <label>Ocasión<select value={form.occasion} onChange={e => set('occasion', e.target.value)}><option value="">—</option><option>Nuevo</option><option>Usado</option><option>Service</option><option>Postventa</option></select></label>
+        )}
+        {!editing && <label>Stock inicial en Depo Central<input type="number" min="0" value={form.stock_nucleo} onChange={e => set('stock_nucleo', e.target.value)} /></label>}
+        <label>Mínimo Depo Central (recompra)<input type="number" min="0" value={form.reorder_nucleo} onChange={e => set('reorder_nucleo', e.target.value)} /></label>
+        <label>Demora del proveedor (días)<input type="number" min="0" value={form.lead_time_days} onChange={e => set('lead_time_days', e.target.value)} /></label>
+      </div>
+      {editing && <p className="muted small">El stock no se edita acá. Para corregirlo usá «Ajustar stock» (queda registrado con motivo).</p>}
+    </Modal>
+  );
+}
+
+function ItemSelect({ items, value, onChange, label = 'Material *' }) {
+  return <label>{label}<select required value={value} onChange={e => onChange(e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name} (Central: {i.stock_nucleo})</option>)}</select></label>;
+}
+
+function RestockModal({ restock, setRestock, items, onClose, onSubmit }) {
+  const set = (k, v) => setRestock(p => ({ ...p, [k]: v }));
+  return (
+    <Modal title="Registrar ingreso" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar ingreso">
+      <div className="form-grid">
+        <ItemSelect items={items} value={restock.item_id} onChange={v => set('item_id', v)} />
+        <label>Cantidad *<input type="number" min="1" required value={restock.qty} onChange={e => set('qty', e.target.value)} /></label>
+        <label>Origen<select value={restock.source} onChange={e => set('source', e.target.value)}><option value="proveedor">Proveedor</option><option value="devolucion">Devolución</option></select></label>
+        <label>Costo<input type="number" step="0.01" value={restock.cost} onChange={e => set('cost', e.target.value)} /></label>
+        <label className="full-width">Notas<input value={restock.notes} onChange={e => set('notes', e.target.value)} placeholder="Remito, proveedor, etc." /></label>
+      </div>
+    </Modal>
   );
 }
 
 function WithdrawalModal({ withdrawal, setWithdrawal, items, onClose, onSubmit }) {
-  const set = (k, v) => setWithdrawal(p => ({...p, [k]: v}));
+  const set = (k, v) => setWithdrawal(p => ({ ...p, [k]: v }));
   const esIncidencia = withdrawal.reason_type === 'incidencia_cliente';
   return (
-    <div className="modal-overlay">
-      <form className="modal" onSubmit={onSubmit}>
-        <div className="card-head"><h2>Registrar retiro</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
-        <div className="form-grid">
-          <label>Material *<select required value={withdrawal.item_id} onChange={e => set('item_id', e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
-          <label>Cantidad *<input type="number" min="1" required value={withdrawal.qty} onChange={e => set('qty', e.target.value)} /></label>
-          <label>Motivo<select value={withdrawal.reason_type} onChange={e => set('reason_type', e.target.value)}><option value="regalo_corporativo">Regalo corporativo</option><option value="incidencia_cliente">Incidencia con cliente</option><option value="uso_interno">Uso interno</option><option value="otro">Otro</option></select></label>
-          {esIncidencia && <><label>Apellido cliente *<input required value={withdrawal.recipient_last_name} onChange={e => set('recipient_last_name', e.target.value)} /></label><label>Patente *<input required value={withdrawal.vehicle_plate} onChange={e => set('vehicle_plate', e.target.value.toUpperCase())} /></label></>
-          }
-          <label className="full-width">Descripción *<input required value={withdrawal.reason_detail} onChange={e => set('reason_detail', e.target.value)} placeholder={esIncidencia ? 'Motivo de la incidencia' : 'Descripción del retiro'} /></label>
-        </div>
-        <div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button><button type="submit" className="primary-btn">Guardar retiro</button></div>
-      </form>
-    </div>
+    <Modal title="Registrar retiro" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar retiro">
+      <div className="form-grid">
+        <ItemSelect items={items} value={withdrawal.item_id} onChange={v => set('item_id', v)} />
+        <label>Cantidad *<input type="number" min="1" required value={withdrawal.qty} onChange={e => set('qty', e.target.value)} /></label>
+        <label>Motivo<select value={withdrawal.reason_type} onChange={e => set('reason_type', e.target.value)}>{REASONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+        {esIncidencia && <>
+          <label>Apellido cliente *<input required value={withdrawal.recipient_last_name} onChange={e => set('recipient_last_name', e.target.value)} /></label>
+          <label>Patente *<input required value={withdrawal.vehicle_plate} onChange={e => set('vehicle_plate', e.target.value.toUpperCase())} /></label>
+        </>}
+        <label className="full-width">Descripción *<input required value={withdrawal.reason_detail} onChange={e => set('reason_detail', e.target.value)} placeholder={esIncidencia ? 'Motivo de la incidencia' : 'Descripción del retiro'} /></label>
+      </div>
+    </Modal>
   );
 }
 
-function MovementModal({ moveData, setMoveData, items, onClose, onSubmit }) {
-  const set = (k, v) => setMoveData(p => ({...p, [k]: v}));
+function MovementModal({ moveData, setMoveData, items, destinations, onClose, onSubmit }) {
+  const set = (k, v) => setMoveData(p => ({ ...p, [k]: v }));
+  const item = items.find(i => i.id === moveData.item_id);
   return (
-    <div className="modal-overlay">
-      <form className="modal" onSubmit={onSubmit}>
-        <div className="card-head"><h2>Nuevo movimiento</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
-        <div className="form-grid">
-          <label>Material *<select required value={moveData.item_id} onChange={e => set('item_id', e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
-          <label>Cantidad *<input type="number" min="1" required value={moveData.qty} onChange={e => set('qty', e.target.value)} /></label>
-          <label>Destino *<select required value={moveData.destination} onChange={e => set('destination', e.target.value)}><option value="">Seleccionar</option>{['Santa Fe', 'Cañada de Gómez', 'Funes', 'Nissan Rosario', 'Kia Rosario', 'BYD Rosario', 'Jeep Rosario', 'RAM Rosario', 'Honda Rosario'].map(d => <option key={d}>{d}</option>)}</select></label>
-          <label className="full-width">Recibido por<input value={moveData.recipient_name} onChange={e => set('recipient_name', e.target.value)} placeholder="Nombre de quién recibe" /></label>
-        </div>
-        <div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button><button type="submit" className="primary-btn">Registrar movimiento</button></div>
-      </form>
-    </div>
+    <Modal title="Enviar a depósito / punto" onClose={onClose} onSubmit={onSubmit} submitLabel="Registrar envío">
+      <div className="form-grid">
+        <ItemSelect items={items} value={moveData.item_id} onChange={v => set('item_id', v)} />
+        <label>Cantidad *<input type="number" min="1" max={item?.stock_nucleo || undefined} required value={moveData.qty} onChange={e => set('qty', e.target.value)} /></label>
+        <label>Destino *<select required value={moveData.destination_id} onChange={e => set('destination_id', e.target.value)}><option value="">Seleccionar</option>{destinations.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+        <label>Quién lo recibe<input value={moveData.recipient_name} onChange={e => set('recipient_name', e.target.value)} placeholder="Nombre de quién recibe" /></label>
+        <label className="full-width">Notas<input value={moveData.notes} onChange={e => set('notes', e.target.value)} /></label>
+      </div>
+      <p className="muted small">Sale del Depo Central ahora y queda «en camino». Se suma al stock del destino cuando confirmen la recepción.</p>
+    </Modal>
   );
 }
 
 function EventModal({ eventData, setEventData, onClose, onSubmit }) {
-  const set = (k, v) => setEventData(p => ({...p, [k]: v}));
+  const set = (k, v) => setEventData(p => ({ ...p, [k]: v }));
   return (
-    <div className="modal-overlay">
-      <form className="modal" onSubmit={onSubmit}>
-        <div className="card-head"><h2>Nuevo evento</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
-        <div className="form-grid">
-          <label>Nombre del evento *<input required value={eventData.event_name} onChange={e => set('event_name', e.target.value)} placeholder="Ej: Activación BYD Rosario" /></label>
-          <label>Fecha del evento *<input type="date" required value={eventData.event_date} onChange={e => set('event_date', e.target.value)} /></label>
-          <label>Llevado por *<input required value={eventData.carried_by} onChange={e => set('carried_by', e.target.value)} placeholder="Nombre de quién lleva el stock" /></label>
-          <label className="full-width">Notas<textarea value={eventData.notes} onChange={e => set('notes', e.target.value)} placeholder="Información adicional" /></label>
-        </div>
-        <div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button><button type="submit" className="primary-btn">Crear evento</button></div>
-      </form>
-    </div>
+    <Modal title="Nuevo evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Crear evento">
+      <div className="form-grid">
+        <label>Nombre del evento *<input required value={eventData.event_name} onChange={e => set('event_name', e.target.value)} placeholder="Ej: Activación BYD Rosario" /></label>
+        <label>Fecha del evento *<input type="date" required value={eventData.event_date} onChange={e => set('event_date', e.target.value)} /></label>
+        <label>Llevado por *<input required value={eventData.carried_by} onChange={e => set('carried_by', e.target.value)} placeholder="Nombre de quién lleva el stock" /></label>
+        <label className="full-width">Notas<textarea value={eventData.notes} onChange={e => set('notes', e.target.value)} placeholder="Información adicional" /></label>
+      </div>
+    </Modal>
+  );
+}
+
+function ReceiveModal({ modal, setModal, item, onClose, onSubmit }) {
+  const m = modal.movement;
+  return (
+    <Modal title="Confirmar recepción" onClose={onClose} onSubmit={onSubmit} submitLabel="Confirmar recepción">
+      <p><strong>{item}</strong> · enviado: {m.qty} · destino: {m.destination}</p>
+      <div className="form-grid">
+        <label>Cantidad que llegó *<input type="number" min="0" max={m.qty} required value={modal.qty} onChange={e => setModal(p => ({ ...p, qty: e.target.value }))} /></label>
+        <label>Observaciones<input value={modal.notes} onChange={e => setModal(p => ({ ...p, notes: e.target.value }))} placeholder="Ej: caja golpeada" /></label>
+      </div>
+      {Number(modal.qty) !== m.qty && <p className="warn small">La cantidad no coincide con lo enviado: queda registrada como «recibido con diferencia».</p>}
+    </Modal>
+  );
+}
+
+function PointWithdrawModal({ modal, setModal, onClose, onSubmit }) {
+  const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
+  const esIncidencia = modal.reason_type === 'incidencia_cliente';
+  return (
+    <Modal title="Registrar entrega" onClose={onClose} onSubmit={onSubmit} submitLabel="Registrar entrega">
+      <p><strong>{modal.name}</strong> · disponible: {modal.available}</p>
+      <div className="form-grid">
+        <label>Cantidad *<input type="number" min="1" max={modal.available} required value={modal.qty} onChange={e => set('qty', e.target.value)} /></label>
+        <label>Motivo<select value={modal.reason_type} onChange={e => set('reason_type', e.target.value)}>{REASONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+        {esIncidencia && <>
+          <label>Apellido cliente *<input required value={modal.recipient_last_name} onChange={e => set('recipient_last_name', e.target.value)} /></label>
+          <label>Patente *<input required value={modal.vehicle_plate} onChange={e => set('vehicle_plate', e.target.value.toUpperCase())} /></label>
+        </>}
+        <label className="full-width">A quién / para qué *<input required value={modal.reason_detail} onChange={e => set('reason_detail', e.target.value)} placeholder="Ej: entrega 0km a cliente, evento en concesionaria" /></label>
+      </div>
+    </Modal>
+  );
+}
+
+function PointStockInModal({ modal, setModal, items, onClose, onSubmit }) {
+  const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
+  return (
+    <Modal title="Cargar stock en este depósito" onClose={onClose} onSubmit={onSubmit} submitLabel="Cargar">
+      <div className="form-grid">
+        <label>Material *<select required value={modal.item_id} onChange={e => set('item_id', e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
+        <label>Cantidad *<input type="number" min="1" required value={modal.qty} onChange={e => set('qty', e.target.value)} /></label>
+        <label className="full-width">Motivo / notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Ej: stock inicial, sobrante de evento" /></label>
+      </div>
+      <p className="muted small">Para mercadería que te manda Rosario usá «Por recibir». Esta carga es para stock que ya tenías o que llegó por otra vía.</p>
+    </Modal>
+  );
+}
+
+function PointMinModal({ modal, setModal, onClose, onSubmit }) {
+  return (
+    <Modal title="Punto de restock" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar">
+      <p><strong>{modal.name}</strong></p>
+      <div className="form-grid">
+        <label>Avisarme cuando el stock llegue a<input type="number" min="0" required value={modal.min} onChange={e => setModal(p => ({ ...p, min: e.target.value }))} /></label>
+      </div>
+      <p className="muted small">Si tenés entregas registradas, el sistema también calcula un mínimo sugerido y usa el mayor de los dos.</p>
+    </Modal>
+  );
+}
+
+function AdjustModal({ modal, setModal, onClose, onSubmit }) {
+  const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
+  return (
+    <Modal title="Ajustar stock" onClose={onClose} onSubmit={onSubmit} submitLabel="Registrar ajuste">
+      <p><strong>{modal.name}</strong> · {modal.place} · stock actual: {modal.current}</p>
+      <div className="form-grid">
+        <label>Stock real contado *<input type="number" min="0" required value={modal.new_qty} onChange={e => set('new_qty', e.target.value)} /></label>
+        <label>Motivo *<input required value={modal.reason} onChange={e => set('reason', e.target.value)} placeholder="Ej: conteo físico, rotura, error de carga" /></label>
+      </div>
+      <p className="muted small">Queda registrado quién lo hizo, cuándo y de cuánto a cuánto.</p>
+    </Modal>
   );
 }

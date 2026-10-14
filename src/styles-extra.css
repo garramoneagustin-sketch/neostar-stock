@@ -1,0 +1,22 @@
+/* Estilos agregados: roles, recepción, mini depósito */
+.notice-banner { background: #e6f4ea; color: #14602b; border: 1px solid #b7dfc4; border-radius: 8px; padding: 10px 12px; margin-bottom: 18px; }
+.notice-banner.clickable, .stat.clickable { cursor: pointer; }
+.topbar-actions { display: flex; gap: 10px; }
+.whoami { margin-bottom: 10px; font-size: 13px; }
+.whoami strong, .whoami small { display: block; }
+.whoami small { color: #b4c0c9; margin-top: 2px; }
+.sub { margin: 18px 0 8px; font-size: 14px; color: #52616d; }
+.small { font-size: 13px; }
+.small-btn { padding: 7px 12px; }
+.inline-label { display: grid; gap: 7px; font-weight: 600; max-width: 360px; }
+.chip { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #eef2f6; color: #3d4b57; }
+.chip.ok, .chip.recibido, .chip.entregado, .chip.cerrado { background: #e6f4ea; color: #14602b; }
+.chip.restock, .chip.en_transito, .chip.abierto, .chip.recibido_con_diferencia { background: #fff2d9; color: #8a4b00; }
+.chip.sin_stock, .chip.cancelado { background: #ffe7e7; color: #a11b1b; }
+.stat.warning.clickable:hover { border-color: #bd5b00; }
+.link-btn:disabled { color: #a3adb6; cursor: not-allowed; }
+.ok { color: #14602b; }
+.pending { color: #a11b1b; }
+.events-list { display: grid; gap: 16px; }
+.event-card { border: 1px solid #e2e8ee; border-radius: 10px; padding: 14px 16px; }
+.event-card h3 { margin: 0 0 6px; }
