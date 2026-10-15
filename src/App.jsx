@@ -33,6 +33,15 @@ function Thumb({ url, alt, w = 160 }) {
 }
 const photoFull = (u) => (driveId(u) ? `https://drive.google.com/file/d/${driveId(u)}/view` : u);
 const slug = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+const friendlyError = (m) => {
+  const t = String(m || '');
+  if (/row-level security|permission denied|not authorized/i.test(t)) return 'No tenés permiso para hacer esto con tu usuario.';
+  if (/jwt expired|invalid jwt|refresh token/i.test(t)) return 'Tu sesión venció. Volvé a iniciar sesión.';
+  if (/failed to fetch|networkerror|load failed/i.test(t)) return 'No hay conexión con el servidor. Revisá tu internet y probá de nuevo.';
+  if (/duplicate key/i.test(t)) return 'Ya existe un registro igual.';
+  if (/Bucket not found|The resource was not found/i.test(t)) return 'Falta configurar el almacenamiento de fotos (PASO 4 en Supabase).';
+  return t;
+};
 const BRANDS = ['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar'];
 
 const REASONS = [
@@ -179,7 +188,7 @@ export default function App() {
   async function run(promise, okMessage, onOk) {
     setError(''); setNotice('');
     const { data, error: err } = await promise;
-    if (err) { setError(err.message); return false; }
+    if (err) { setError(friendlyError(err.message)); return false; }
     setModal(null);
     if (okMessage) setNotice(typeof okMessage === 'function' ? okMessage(data) : okMessage);
     if (onOk) onOk(data);
@@ -198,18 +207,19 @@ export default function App() {
       brand: form.brand || 'Genérico',
       occasion: form.category === 'Regalos' ? (form.occasion || null) : null,
       reorder_nucleo: Number(form.reorder_nucleo) || 0,
-      lead_time_days: Number(form.lead_time_days) || 0
+      lead_time_days: Number(form.lead_time_days) || 0,
+      ...(editingItem ? { photo_urls: form.photo_urls || [] } : {})
     };
     // El stock NO se edita acá: al crear se carga el inicial; después solo con Ingreso/Retiro/Movimiento/Ajuste.
     const payload = editingItem ? base : { ...base, stock_nucleo: Number(form.stock_nucleo) || 0 };
     const files = form.photoFiles || [];
-    const existing = editingItem ? (items.find(x => x.id === editingItem)?.photo_urls || []) : [];
+    const existing = editingItem ? (form.photo_urls || []) : [];
     const req = editingItem
       ? supabase.from('items').update(payload).eq('id', editingItem).select().single()
       : supabase.from('items').insert([payload]).select().single();
     setError(''); setNotice('');
     const { data: saved, error: err } = await req;
-    if (err) { setError(err.message); return; }
+    if (err) { setError(friendlyError(err.message)); return; }
     let msg = editingItem ? 'Material actualizado' : 'Material creado';
     if (files.length) {
       const urls = [];
@@ -218,7 +228,7 @@ export default function App() {
         const ext = (f.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
         const path = `${slug(saved.name)}${saved.brand && saved.brand !== 'Genérico' ? '-' + slug(saved.brand) : ''}-${existing.length + i + 1}-${Date.now().toString(36)}.${ext}`;
         const up = await supabase.storage.from('item-photos').upload(path, f, { upsert: false, contentType: f.type });
-        if (up.error) { setError(`El material se guardó pero la foto no se pudo subir: ${up.error.message}`); break; }
+        if (up.error) { setError(`El material se guardó pero la foto no se pudo subir: ${friendlyError(up.error.message)}`); break; }
         urls.push(supabase.storage.from('item-photos').getPublicUrl(path).data.publicUrl);
       }
       if (urls.length) {
@@ -392,8 +402,11 @@ export default function App() {
   }
 
   function cancelEvent(ev) {
-    if (!window.confirm(`¿Cancelar "${ev.event_name}"? Se libera lo que tenía reservado.`)) return;
-    run(supabase.rpc('cancel_event', { p_event_id: ev.id }), 'Evento cancelado');
+    setModal({
+      type: 'confirm', title: 'Cancelar evento', danger: true, yes: 'Sí, cancelar evento',
+      text: `¿Seguro que querés cancelar «${ev.event_name}»? Se libera lo que tenía reservado.`,
+      onYes: () => run(supabase.rpc('cancel_event', { p_event_id: ev.id }), 'Evento cancelado')
+    });
   }
 
   // ---------- Derivados ----------
@@ -1014,7 +1027,17 @@ function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
           <input type="file" accept="image/*" multiple onChange={e => set('photoFiles', Array.from(e.target.files || []))} />
         </label>
         {form.photoFiles?.length > 0 && <small className="muted">{form.photoFiles.length} foto(s) para subir: {form.photoFiles.map(f => f.name).join(', ')}</small>}
-        {editing && form.photo_urls?.length > 0 && <small className="muted">Ya tiene {form.photo_urls.length} foto(s); las nuevas se suman.</small>}
+        {editing && form.photo_urls?.length > 0 && (
+          <div className="photo-edit">
+            {form.photo_urls.map(u => (
+              <span key={u} className="photo-edit-item">
+                <Thumb url={u} alt="" w={120} />
+                <button type="button" title="Quitar esta foto" onClick={() => set('photo_urls', form.photo_urls.filter(x => x !== u))}>×</button>
+              </span>
+            ))}
+            <small className="muted">Las fotos nuevas se suman. Con × quitás una (se aplica al guardar).</small>
+          </div>
+        )}
       </div>
       {editing && <p className="muted small">El stock no se edita acá. Para corregirlo usá «Ajustar stock» (queda registrado con motivo).</p>}
     </Modal>
@@ -1237,7 +1260,7 @@ function retiroHtml(event, rows) {
 </style>
 <div class="retiro">
 <h1>NEOSTAR · Retiro de elementos de marketing</h1>
-<p class="sub">Depósito principal · Nº ${esc(String(event.id).slice(0, 8).toUpperCase())} · Emitido el ${today}</p>
+<p class="sub">DEPOSITO MARKETING ROSARIO · Nº ${esc(String(event.id).slice(0, 8).toUpperCase())} · Emitido el ${today}</p>
 <table class="info"><tr><td>Evento</td><td colspan="3">${esc(event.event_name)}</td></tr>
 <tr><td>Marca</td><td>${esc(event.brand || '—')}</td><td>Responsable</td><td>${esc(event.carried_by || '')}</td></tr>
 <tr><td>Fecha de inicio</td><td>${fmtDate((event.start_date || event.event_date) + 'T12:00:00')}</td><td>Fecha de fin</td><td>${fmtDate((event.end_date || event.event_date) + 'T12:00:00')}</td></tr></table>
