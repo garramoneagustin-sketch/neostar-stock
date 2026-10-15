@@ -26,11 +26,23 @@ const CATEGORIES = [
 const driveId = (u) => (String(u).match(/\/d\/([\w-]+)/) || [])[1];
 const photoThumb = (u, w = 160) => (driveId(u) ? `https://drive.google.com/thumbnail?id=${driveId(u)}&sz=w${w}` : u);
 function Thumb({ url, alt, w = 160 }) {
-  const [tries, setTries] = useState(0);
-  if (tries > 2) return <span className="thumb-fail" title="Foto no disponible: el archivo no se encuentra o no se puede abrir">❓</span>;
-  const src = photoThumb(url, w) + (tries ? `${driveId(url) ? '&' : '?'}r=${tries}` : '');
-  return <img key={tries} src={src} alt={alt} loading="lazy" decoding="async" referrerPolicy="no-referrer"
-    onError={() => setTimeout(() => setTries(t => t + 1), 800 * (tries + 1))} />;
+  const [st, setSt] = useState({ loaded: false, failed: false, tries: 0 });
+  const src = photoThumb(url, w) + (st.tries ? `${driveId(url) ? '&' : '?'}r=${st.tries}` : '');
+  // Si falla, se marca ❓ al instante y se reintenta una sola vez en segundo plano
+  const onError = () => {
+    setSt(x => ({ ...x, failed: true }));
+    if (st.tries < 1) setTimeout(() => setSt(x => ({ ...x, tries: x.tries + 1 })), 1500);
+  };
+  return (
+    <span className="thumb-box">
+      {!st.loaded && (st.failed
+        ? <span className="thumb-fail" title="Foto no disponible: el archivo no se encuentra o no se puede abrir">❓</span>
+        : <span className="thumb-wait" />)}
+      <img key={st.tries} src={src} alt="" aria-label={alt} loading="lazy" decoding="async" referrerPolicy="no-referrer"
+        className={st.loaded ? 'is-loaded' : 'is-pending'}
+        onLoad={() => setSt(x => ({ ...x, loaded: true, failed: false }))} onError={onError} />
+    </span>
+  );
 }
 const photoFull = (u) => (driveId(u) ? `https://drive.google.com/file/d/${driveId(u)}/view` : u);
 const slug = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
@@ -1082,7 +1094,7 @@ function PhotoViewer({ item, onClose }) {
       <div className="modal photo-modal" onClick={e => e.stopPropagation()}>
         <div className="card-head"><h2>{item.name}{item.brand && item.brand !== 'Genérico' ? ` · ${item.brand}` : ''}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
         <div className="photo-main">
-          <Thumb url={list[cur]} alt={item.name} w={900} />
+          <Thumb key={list[cur]} url={list[cur]} alt={item.name} w={900} />
         </div>
         {list.length > 1 && <div className="photo-strip">{list.map((u, i) => (
           <button type="button" key={u} className={i === cur ? 'on' : ''} onClick={() => setCur(i)}><Thumb url={u} alt="" w={120} /></button>

@@ -171,3 +171,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
 }
 
 .modal-actions .secondary-btn, .modal-actions .primary-btn { width: auto; white-space: nowrap; padding: 11px 20px; }
+
+/* Miniaturas: sin ícono roto mientras carga; ❓ inmediato si falla */
+.thumb-box { position: relative; display: block; width: 100%; height: 100%; }
+.thumb-box img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .2s ease; }
+.thumb-box img.is-loaded { opacity: 1; }
+.thumb-wait { position: absolute; inset: 0; background: linear-gradient(100deg, #e5e9fb 30%, #f6f7ff 50%, #e5e9fb 70%) 0 0 / 220% 100%; animation: shimmer 1.2s linear infinite; }
+.thumb-fail { position: absolute; inset: 0; display: grid; place-items: center; font-size: 22px; background: #fff; }
+.photo-main .thumb-box { width: auto; height: auto; min-height: 240px; min-width: 240px; }
+.photo-main .thumb-box img { position: static; width: auto; max-width: 100%; max-height: 60vh; height: auto; border-radius: 12px; }
