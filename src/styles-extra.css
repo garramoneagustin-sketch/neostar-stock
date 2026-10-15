@@ -95,3 +95,8 @@
 .photo-upload { display: grid; gap: 6px; }
 .confirm-modal { width: min(460px, 100%); }
 .danger-btn { background: #b42318; }
+.filter-label { display: grid; gap: 6px; font-size: 12px; font-weight: 700; color: #5a6a77; text-transform: uppercase; letter-spacing: .04em; }
+.filter-label input, .filter-label select { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 14px; }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; }
+.pager .secondary-btn { width: auto; }
+.thumb-fail { display: grid; place-items: center; width: 100%; height: 100%; font-size: 20px; }

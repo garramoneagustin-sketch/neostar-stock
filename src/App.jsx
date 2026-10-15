@@ -23,7 +23,14 @@ const CATEGORIES = [
 ];
 
 const driveId = (u) => (String(u).match(/\/d\/([\w-]+)/) || [])[1];
-const photoThumb = (u) => (driveId(u) ? `https://drive.google.com/thumbnail?id=${driveId(u)}&sz=w400` : u);
+const photoThumb = (u, w = 160) => (driveId(u) ? `https://drive.google.com/thumbnail?id=${driveId(u)}&sz=w${w}` : u);
+function Thumb({ url, alt, w = 160 }) {
+  const [tries, setTries] = useState(0);
+  if (tries > 2) return <span className="thumb-fail" title="No se pudo cargar. Tocá para abrir la foto.">📷</span>;
+  const src = photoThumb(url, w) + (tries ? `${driveId(url) ? '&' : '?'}r=${tries}` : '');
+  return <img key={tries} src={src} alt={alt} loading="lazy" decoding="async" referrerPolicy="no-referrer"
+    onError={() => setTimeout(() => setTries(t => t + 1), 800 * (tries + 1))} />;
+}
 const photoFull = (u) => (driveId(u) ? `https://drive.google.com/file/d/${driveId(u)}/view` : u);
 const slug = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
 const BRANDS = ['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar'];
@@ -94,7 +101,7 @@ export default function App() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => setSession(prev => ((prev?.user?.id || null) === (next?.user?.id || null) ? prev : next)));
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -103,10 +110,10 @@ export default function App() {
     if (!session) { setProfile(undefined); return; }
     supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle()
       .then(({ data }) => {
-        setProfile(data || null);
+        setProfile(prev => (prev && data && prev.id === data.id && prev.role === data.role && prev.destination_id === data.destination_id ? prev : (data || null)));
         if (data?.role === 'punto') setTab('mideposito');
       });
-  }, [session]);
+  }, [session?.user?.id]);
 
   const loadData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -137,19 +144,19 @@ export default function App() {
     }
     setError(errs[0] || '');
     setLoading(false);
-  }, [profile]);
+  }, [profile?.role]);
 
   useEffect(() => {
     if (!session || !profile) return;
     loadData();
-    const reload = () => loadData(true);
+    let t; const reload = () => { clearTimeout(t); t = setTimeout(() => loadData(true), 500); };
     let ch = supabase.channel('neostar-live');
     ['items', 'restocks', 'withdrawals', 'movements', 'events', 'event_items', 'destination_stock', 'shipments'].forEach((table) => {
       ch = ch.on('postgres_changes', { event: '*', schema: 'public', table }, reload);
     });
     ch.subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [session, profile, loadData]);
+    return () => { clearTimeout(t); supabase.removeChannel(ch); };
+  }, [session?.user?.id, profile?.id, profile?.role, loadData]);
 
   // Depósito seleccionado por defecto
   useEffect(() => {
@@ -209,8 +216,8 @@ export default function App() {
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
         const ext = (f.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const path = `${slug(saved.name)}${saved.brand && saved.brand !== 'Genérico' ? '-' + slug(saved.brand) : ''}-${existing.length + i + 1}.${ext}`;
-        const up = await supabase.storage.from('item-photos').upload(path, f, { upsert: true, contentType: f.type });
+        const path = `${slug(saved.name)}${saved.brand && saved.brand !== 'Genérico' ? '-' + slug(saved.brand) : ''}-${existing.length + i + 1}-${Date.now().toString(36)}.${ext}`;
+        const up = await supabase.storage.from('item-photos').upload(path, f, { upsert: false, contentType: f.type });
         if (up.error) { setError(`El material se guardó pero la foto no se pudo subir: ${up.error.message}`); break; }
         urls.push(supabase.storage.from('item-photos').getPublicUrl(path).data.publicUrl);
       }
@@ -640,14 +647,20 @@ function Stat({ label, value, tone, onClick }) {
   return <div className={`stat ${tone || ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}><strong>{value}</strong><span>{label}</span></div>;
 }
 
-function StockTable({ items, inDepots, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete, onPhotos }) {
+function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete, onPhotos }) {
+  const PAGE = 25;
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [query, categoryFilter, brandFilter]);
+  const pages = Math.max(1, Math.ceil(allItems.length / PAGE));
+  const cur = Math.min(page, pages - 1);
+  const items = allItems.slice(cur * PAGE, cur * PAGE + PAGE);
   return (
     <section className="card">
       <div className="card-head"><h2>Materiales</h2></div>
       <div className="filters-row">
-        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar..." />
-        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option>Todas</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
-        <select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}><option>Todas</option><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select>
+        <label className="filter-label">Buscar<input value={query} onChange={e => setQuery(e.target.value)} placeholder="Nombre, SKU o marca…" /></label>
+        <label className="filter-label">Categoría<select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option>Todas</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></label>
+        <label className="filter-label">Marca<select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}><option>Todas</option><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select></label>
       </div>
       <table>
         <thead><tr><th></th><th>Material</th><th>Categoría</th><th>Marca</th><th>DEPOSITO MARKETING ROSARIO</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
@@ -658,7 +671,7 @@ function StockTable({ items, inDepots, isStaff, query, setQuery, categoryFilter,
               <tr key={i.id}>
                 <td className="photo-col">{i.photo_urls?.length ? (
                   <button type="button" className="thumb-btn" onClick={() => onPhotos(i)} title="Ver fotos">
-                    <img src={photoThumb(i.photo_urls[0])} alt={i.name} loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />
+                    <Thumb url={i.photo_urls[0]} alt={i.name} />
                     {i.photo_urls.length > 1 && <span className="thumb-count">{i.photo_urls.length}</span>}
                   </button>) : null}</td>
                 <td><strong>{i.name}</strong><small>{i.sku || 'Sin SKU'}</small></td>
@@ -676,6 +689,13 @@ function StockTable({ items, inDepots, isStaff, query, setQuery, categoryFilter,
           {!items.length && <tr><td colSpan="7" className="muted">No hay materiales</td></tr>}
         </tbody>
       </table>
+      {pages > 1 && (
+        <div className="pager">
+          <button type="button" className="secondary-btn" disabled={cur === 0} onClick={() => setPage(cur - 1)}>← Anterior</button>
+          <span className="muted">Página {cur + 1} de {pages} · {allItems.length} materiales</span>
+          <button type="button" className="secondary-btn" disabled={cur >= pages - 1} onClick={() => setPage(cur + 1)}>Siguiente →</button>
+        </div>
+      )}
     </section>
   );
 }
@@ -942,10 +962,10 @@ function PhotoViewer({ item, onClose }) {
       <div className="modal photo-modal" onClick={e => e.stopPropagation()}>
         <div className="card-head"><h2>{item.name}{item.brand && item.brand !== 'Genérico' ? ` · ${item.brand}` : ''}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
         <div className="photo-main">
-          <img src={photoThumb(list[cur]).replace('sz=w400', 'sz=w1000')} alt={item.name} referrerPolicy="no-referrer" />
+          <Thumb url={list[cur]} alt={item.name} w={900} />
         </div>
         {list.length > 1 && <div className="photo-strip">{list.map((u, i) => (
-          <button type="button" key={u} className={i === cur ? 'on' : ''} onClick={() => setCur(i)}><img src={photoThumb(u)} alt="" referrerPolicy="no-referrer" /></button>
+          <button type="button" key={u} className={i === cur ? 'on' : ''} onClick={() => setCur(i)}><Thumb url={u} alt="" w={120} /></button>
         ))}</div>}
         <div className="modal-actions">
           <a className="secondary-btn" href={photoFull(list[cur])} target="_blank" rel="noreferrer">Abrir original</a>
