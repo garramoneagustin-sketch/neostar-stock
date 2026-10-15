@@ -22,6 +22,10 @@ const CATEGORIES = [
   'Otros'
 ];
 
+const driveId = (u) => (String(u).match(/\/d\/([\w-]+)/) || [])[1];
+const photoThumb = (u) => (driveId(u) ? `https://drive.google.com/thumbnail?id=${driveId(u)}&sz=w400` : u);
+const photoFull = (u) => (driveId(u) ? `https://drive.google.com/file/d/${driveId(u)}/view` : u);
+const slug = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
 const BRANDS = ['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar'];
 
 const REASONS = [
@@ -50,7 +54,7 @@ const STATE_LABELS = {
 
 const emptyItem = {
   name: '', sku: '', kind: 'consumible', category: 'Otros', brand: 'Genérico',
-  occasion: '', stock_nucleo: 0, reorder_nucleo: 0, lead_time_days: 15
+  occasion: '', stock_nucleo: 0, reorder_nucleo: 0, lead_time_days: 15, photoFiles: []
 };
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('es-AR') : '—');
@@ -191,16 +195,39 @@ export default function App() {
     };
     // El stock NO se edita acá: al crear se carga el inicial; después solo con Ingreso/Retiro/Movimiento/Ajuste.
     const payload = editingItem ? base : { ...base, stock_nucleo: Number(form.stock_nucleo) || 0 };
+    const files = form.photoFiles || [];
+    const existing = editingItem ? (items.find(x => x.id === editingItem)?.photo_urls || []) : [];
     const req = editingItem
-      ? supabase.from('items').update(payload).eq('id', editingItem)
-      : supabase.from('items').insert([payload]);
-    const ok = await run(req, editingItem ? 'Material actualizado' : 'Material creado');
-    if (ok) { setForm(emptyItem); setEditingItem(null); }
+      ? supabase.from('items').update(payload).eq('id', editingItem).select().single()
+      : supabase.from('items').insert([payload]).select().single();
+    setError(''); setNotice('');
+    const { data: saved, error: err } = await req;
+    if (err) { setError(err.message); return; }
+    let msg = editingItem ? 'Material actualizado' : 'Material creado';
+    if (files.length) {
+      const urls = [];
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const ext = (f.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const path = `${slug(saved.name)}${saved.brand && saved.brand !== 'Genérico' ? '-' + slug(saved.brand) : ''}-${existing.length + i + 1}.${ext}`;
+        const up = await supabase.storage.from('item-photos').upload(path, f, { upsert: true, contentType: f.type });
+        if (up.error) { setError(`El material se guardó pero la foto no se pudo subir: ${up.error.message}`); break; }
+        urls.push(supabase.storage.from('item-photos').getPublicUrl(path).data.publicUrl);
+      }
+      if (urls.length) {
+        const u = await supabase.from('items').update({ photo_urls: [...existing, ...urls] }).eq('id', saved.id);
+        if (u.error) setError(u.error.message); else msg += ` con ${urls.length} foto(s)`;
+      }
+    }
+    setModal(null); setNotice(msg); setForm(emptyItem); setEditingItem(null); loadData(true);
   }
 
   function deleteItem(item) {
-    if (!window.confirm(`¿Eliminar "${item.name}"?\n\nSi ya tuvo movimientos se archiva (deja de verse pero se conserva el historial). Tiene que estar en 0.`)) return;
-    run(supabase.rpc('delete_item', { p_item_id: item.id }), (res) => `Material ${res}`);
+    setModal({
+      type: 'confirm', title: 'Eliminar material', danger: true, yes: 'Sí, eliminar',
+      text: `¿Seguro que querés eliminar «${item.name}»${item.brand && item.brand !== 'Genérico' ? ` (${item.brand})` : ''}? Si ya tuvo movimientos se archiva (deja de verse pero se conserva el historial). Tiene que estar en 0.`,
+      onYes: () => run(supabase.rpc('delete_item', { p_item_id: item.id }), (res) => `Material ${res}`)
+    });
   }
 
   function saveRestock(e) {
@@ -250,6 +277,16 @@ export default function App() {
   }
 
   function openReception(sh) {
+    // Concesionarios (sin acceso a la plataforma): lo marca el equipo cuando el concesionario avisa que le llegó
+    if (!destById[sh.destination_id]?.is_depot && !isPunto) {
+      const ls = linesByShipment[sh.id] || [];
+      setModal({
+        type: 'confirm', title: 'Marcar como recibido', yes: 'Sí, ya le llegó',
+        text: `¿${sh.destination_name} te avisó que ya recibió este envío (${ls.map(l => `${l.items?.name} ×${l.qty}`).join(', ')})? Se suma a lo que tiene el concesionario.`,
+        onYes: () => run(supabase.rpc('receive_shipment', { p_shipment_id: sh.id, p_lines: ls.map(l => ({ movement_id: l.id, ok: true })), p_notes: null }), 'Marcado como recibido. Ya figura en el concesionario.')
+      });
+      return;
+    }
     const lines = (linesByShipment[sh.id] || []).map(m => ({ movement_id: m.id, name: m.items?.name, qty: m.qty, ok: null, qty_received: 0, note: '' }));
     setError(''); setNotice('');
     setModal({ type: 'receive', shipment: sh, lines, notes: '' });
@@ -296,7 +333,7 @@ export default function App() {
 
   const emptyEvent = () => ({ type: 'event', event_name: '', start_date: '', end_date: '', brand: '', carried_by: '', notes: '', lines: [{ item_id: '', qty: 1 }] });
 
-  // Disponible = stock del Depo Central - reservado por otros eventos abiertos que se pisan en fechas
+  // Disponible = stock del DEPOSITO MARKETING ROSARIO - reservado por otros eventos abiertos que se pisan en fechas
   function availableOf(itemId, start, end, excludeEventId) {
     const it = itemById[itemId];
     if (!it) return 0;
@@ -328,7 +365,7 @@ export default function App() {
     e.preventDefault();
     if (!modal.by.trim()) { setError('Indicá quién retira los materiales'); return; }
     run(supabase.rpc('withdraw_event', { p_event_id: modal.event.id, p_withdrawn_by: modal.by.trim() }),
-      'Materiales entregados: ya salieron del Depo Central. Podés imprimir el retiro para firmar.');
+      'Materiales entregados: ya salieron del DEPOSITO MARKETING ROSARIO. Podés imprimir el retiro para firmar.');
   }
 
   function saveReturnEvent(e) {
@@ -344,7 +381,7 @@ export default function App() {
       }
       return supabase.rpc('close_event', { p_event_id: m.event.id });
     })();
-    run(job, 'Regreso registrado. Lo devuelto volvió al Depo Central.');
+    run(job, 'Regreso registrado. Lo devuelto volvió al DEPOSITO MARKETING ROSARIO.');
   }
 
   function cancelEvent(ev) {
@@ -376,7 +413,18 @@ export default function App() {
     items.filter(x => x.kind === 'consumible' && Number(x.reorder_nucleo) > 0 && Number(x.stock_nucleo) <= Number(x.reorder_nucleo)),
   [items]);
 
-  const pointAlerts = useMemo(() => pointStatus.filter(p => p.status !== 'ok'), [pointStatus]);
+  // Último envío por destino y material (seguimiento de lo enviado a concesionarios)
+  const lastSent = useMemo(() => {
+    const o = {};
+    movements.filter(m => m.type === 'envio_destino').forEach(m => {
+      const k = `${m.destino_id}|${m.item_id}`;
+      if (!o[k] || new Date(m.created_at) > new Date(o[k].created_at)) o[k] = m;
+    });
+    return o;
+  }, [movements]);
+  const depotIds = useMemo(() => new Set(destinations.filter(d => d.is_depot).map(d => d.id)), [destinations]);
+  // Solo los depósitos (no los concesionarios) generan avisos de reposición en la plataforma
+  const pointAlerts = useMemo(() => pointStatus.filter(p => p.status !== 'ok' && depotIds.has(p.destination_id)), [pointStatus, depotIds]);
 
   const filteredItems = useMemo(() =>
     items.filter(item => {
@@ -388,8 +436,8 @@ export default function App() {
 
   const history = useMemo(() => {
     const rows = [];
-    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a Depo Central', item: r.items?.name, qty: r.qty, detalle: [r.source, r.cost ? `$${r.cost}` : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
-    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: 'Retiro de Depo Central', item: w.items?.name, qty: w.qty, detalle: [w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
+    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a DEPOSITO MARKETING ROSARIO', item: r.items?.name, qty: r.qty, detalle: [r.source, r.cost ? `$${r.cost}` : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
+    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: 'Retiro de DEPOSITO MARKETING ROSARIO', item: w.items?.name, qty: w.qty, detalle: [w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
     movements.forEach(m => {
       if (m.type === 'stock_inicial' || m.type === 'compra') {
         rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type], item: m.items?.name, qty: m.qty, detalle: m.notes || '', quien: m.person });
@@ -427,7 +475,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">NEOSTAR<span>Control de stock</span></div>
+        <div className="brand">MARKETING<span>Control de stock</span></div>
         {nav.map(([key, label]) => (
           <button key={key} className={tab === key ? 'nav-btn active' : 'nav-btn'} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>
         ))}
@@ -459,11 +507,11 @@ export default function App() {
           tab === 'dashboard' ? <Dashboard items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} toReview={toReview} linesByShipment={linesByShipment} onReview={reviewShipment} events={events} history={history} onGo={setTab} /> :
           tab === 'stock' ? <StockTable items={filteredItems} inDepots={inDepots} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter}
               onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', sku: item.sku || '' }); setModal({ type: 'item' }); }}
-              onAdjust={(item) => setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reason: '', place: 'Depo Central' })}
-              onDelete={deleteItem} /> :
+              onAdjust={(item) => setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reason: '', place: 'DEPOSITO MARKETING ROSARIO' })}
+              onDelete={deleteItem} onPhotos={(item) => setModal({ type: 'photos', item })} /> :
           tab === 'depositos' || tab === 'mideposito' ? (
             <DepositoView
-              isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={setSelectedDest}
+              lastSent={lastSent} isDepot={Boolean(destById[selectedDest]?.is_depot)} isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={setSelectedDest}
               rows={destStock.filter(r => r.destination_id === selectedDest)} status={pointStatus.filter(p => p.destination_id === selectedDest)}
               itemById={itemById} inTransit={inTransit.filter(m => m.destination_id === selectedDest)} onGoReceive={() => setTab('recepcion')}
               onDeliver={(r) => setModal({ type: 'pwithdraw', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' })}
@@ -480,6 +528,8 @@ export default function App() {
         }
       </main>
 
+      {modal?.type === 'confirm' && <ConfirmModal modal={modal} onClose={() => setModal(null)} />}
+      {modal?.type === 'photos' && <PhotoViewer item={modal.item} onClose={() => setModal(null)} />}
       {modal?.type === 'item' && <ItemModal form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setModal(null)} onSubmit={saveItem} />}
       {modal?.type === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} onClose={() => setModal(null)} onSubmit={saveRestock} />}
       {modal?.type === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} onClose={() => setModal(null)} onSubmit={saveWithdrawal} />}
@@ -560,7 +610,7 @@ function Dashboard({ items, centralAlerts, pointAlerts, inTransit, toReview, lin
           {centralAlerts.length + pointAlerts.length === 0 && <p className="muted">Sin alertas</p>}
           {centralAlerts.length > 0 && (
             <>
-              <h3 className="sub">Recomprar al proveedor (Depo Central)</h3>
+              <h3 className="sub">Recomprar al proveedor (DEPOSITO MARKETING ROSARIO)</h3>
               <table><thead><tr><th>Material</th><th>Stock</th><th>Mínimo</th></tr></thead>
                 <tbody>{centralAlerts.slice(0, 8).map(i => <tr key={i.id}><td>{i.name}</td><td className="warn">{i.stock_nucleo}</td><td>{i.reorder_nucleo}</td></tr>)}</tbody></table>
             </>
@@ -590,7 +640,7 @@ function Stat({ label, value, tone, onClick }) {
   return <div className={`stat ${tone || ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}><strong>{value}</strong><span>{label}</span></div>;
 }
 
-function StockTable({ items, inDepots, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete }) {
+function StockTable({ items, inDepots, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete, onPhotos }) {
   return (
     <section className="card">
       <div className="card-head"><h2>Materiales</h2></div>
@@ -600,12 +650,17 @@ function StockTable({ items, inDepots, isStaff, query, setQuery, categoryFilter,
         <select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}><option>Todas</option><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select>
       </div>
       <table>
-        <thead><tr><th>Material</th><th>Categoría</th><th>Marca</th><th>Depo Central</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
+        <thead><tr><th></th><th>Material</th><th>Categoría</th><th>Marca</th><th>DEPOSITO MARKETING ROSARIO</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
         <tbody>
           {items.map(i => {
             const low = Number(i.reorder_nucleo) > 0 && Number(i.stock_nucleo) <= Number(i.reorder_nucleo);
             return (
               <tr key={i.id}>
+                <td className="photo-col">{i.photo_urls?.length ? (
+                  <button type="button" className="thumb-btn" onClick={() => onPhotos(i)} title="Ver fotos">
+                    <img src={photoThumb(i.photo_urls[0])} alt={i.name} loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />
+                    {i.photo_urls.length > 1 && <span className="thumb-count">{i.photo_urls.length}</span>}
+                  </button>) : null}</td>
                 <td><strong>{i.name}</strong><small>{i.sku || 'Sin SKU'}</small></td>
                 <td>{i.category}</td><td>{i.brand}</td>
                 <td className={low ? 'warn' : ''}>{i.stock_nucleo || 0}{Number(i.reorder_nucleo) > 0 && <small>mín. {i.reorder_nucleo}</small>}</td>
@@ -618,14 +673,14 @@ function StockTable({ items, inDepots, isStaff, query, setQuery, categoryFilter,
               </tr>
             );
           })}
-          {!items.length && <tr><td colSpan="6" className="muted">No hay materiales</td></tr>}
+          {!items.length && <tr><td colSpan="7" className="muted">No hay materiales</td></tr>}
         </tbody>
       </table>
     </section>
   );
 }
 
-function DepositoView({ isPunto, canOperate, destinations, selectedDest, setSelectedDest, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onMin, onAdjust }) {
+function DepositoView({ lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onMin, onAdjust }) {
   const statusByItem = Object.fromEntries(status.map(s => [s.item_id, s]));
   const dest = destinations.find(d => d.id === selectedDest);
   return (
@@ -647,15 +702,28 @@ function DepositoView({ isPunto, canOperate, destinations, selectedDest, setSele
       <section className="card">
         <div className="card-head">
           <h2>{dest?.name || 'Depósito'}</h2>
-          {canOperate && <button className="primary-btn" onClick={onStockIn}>+ Cargar stock</button>}
+          {canOperate && isDepot && <button className="primary-btn" onClick={onStockIn}>+ Cargar stock</button>}
         </div>
-        <p className="muted small">El stock sube cuando confirmás la recepción de un envío o cuando cargás stock propio. Baja con cada entrega. El punto de restock sugerido se calcula con tus entregas de los últimos 90 días.</p>
+        {isDepot
+          ? <p className="muted small">El stock sube cuando confirmás la recepción de un envío o cuando cargás stock propio. Baja con cada entrega. El punto de restock sugerido se calcula con tus entregas de los últimos 90 días.</p>
+          : <p className="muted small">Concesionario: acá solo ves lo que le enviamos y cuándo. Los envíos descuentan del DEPOSITO MARKETING ROSARIO al enviarse y se suman acá cuando los marcás como recibidos. Lo que el concesionario va usando se descuenta a mano con «Ajustar», y la reposición se pide por mensaje.</p>}
         <table>
-          <thead><tr><th>Material</th><th>Stock</th><th>Punto de restock</th><th>Reponer</th><th>Estado</th>{canOperate && <th></th>}</tr></thead>
+          <thead>{isDepot
+            ? <tr><th>Material</th><th>Stock</th><th>Punto de restock</th><th>Reponer</th><th>Estado</th>{canOperate && <th></th>}</tr>
+            : <tr><th>Material</th><th>Tiene (según envíos)</th><th>Último envío</th>{canOperate && <th></th>}</tr>}</thead>
           <tbody>
             {rows.map(r => {
               const s = statusByItem[r.item_id];
               const st = s?.status || 'ok';
+              const ls = lastSent[`${selectedDest}|${r.item_id}`];
+              if (!isDepot) return (
+                <tr key={r.item_id}>
+                  <td><strong>{itemById[r.item_id]?.name || 'Material'}</strong><small>{itemById[r.item_id]?.category}</small></td>
+                  <td>{r.qty}</td>
+                  <td>{ls ? `${ls.qty} el ${fmtDate(ls.created_at)}` : '—'}</td>
+                  {canOperate && <td className="actions-col"><button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button></td>}
+                </tr>
+              );
               return (
                 <tr key={r.item_id}>
                   <td><strong>{itemById[r.item_id]?.name || 'Material'}</strong><small>{itemById[r.item_id]?.category}</small></td>
@@ -736,7 +804,7 @@ function RestockTable({ rows }) {
 function WithdrawalTable({ rows }) {
   return (
     <section className="card">
-      <h2>Retiros / Uso (Depo Central)</h2>
+      <h2>Retiros / Uso (DEPOSITO MARKETING ROSARIO)</h2>
       <table>
         <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Motivo</th><th>Cliente</th><th>Patente</th><th>Registrado por</th></tr></thead>
         <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.reason_detail}</td><td>{r.recipient_last_name || '—'}</td><td>{r.vehicle_plate || '—'}</td><td>{r.person}</td></tr>)}</tbody>
@@ -851,6 +919,44 @@ function Modal({ title, onClose, onSubmit, submitLabel, children }) {
   );
 }
 
+function ConfirmModal({ modal, onClose }) {
+  return (
+    <div className="modal-overlay">
+      <div className="modal confirm-modal">
+        <div className="card-head"><h2>{modal.title}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
+        <p>{modal.text}</p>
+        <div className="modal-actions">
+          <button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button>
+          <button type="button" className={modal.danger ? 'primary-btn danger-btn' : 'primary-btn'} onClick={() => { const f = modal.onYes; onClose(); f(); }}>{modal.yes || 'Confirmar'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PhotoViewer({ item, onClose }) {
+  const [cur, setCur] = useState(0);
+  const list = item.photo_urls || [];
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal photo-modal" onClick={e => e.stopPropagation()}>
+        <div className="card-head"><h2>{item.name}{item.brand && item.brand !== 'Genérico' ? ` · ${item.brand}` : ''}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
+        <div className="photo-main">
+          <img src={photoThumb(list[cur]).replace('sz=w400', 'sz=w1000')} alt={item.name} referrerPolicy="no-referrer" />
+        </div>
+        {list.length > 1 && <div className="photo-strip">{list.map((u, i) => (
+          <button type="button" key={u} className={i === cur ? 'on' : ''} onClick={() => setCur(i)}><img src={photoThumb(u)} alt="" referrerPolicy="no-referrer" /></button>
+        ))}</div>}
+        <div className="modal-actions">
+          <a className="secondary-btn" href={photoFull(list[cur])} target="_blank" rel="noreferrer">Abrir original</a>
+          <button type="button" className="primary-btn" onClick={onClose}>Cerrar</button>
+        </div>
+        <p className="muted small">Si la foto no aparece, es porque el archivo de Drive no está compartido con tu cuenta: abrilo con «Abrir original».</p>
+      </div>
+    </div>
+  );
+}
+
 function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
   return (
@@ -864,9 +970,16 @@ function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
         {form.category === 'Regalos' && (
           <label>Ocasión<select value={form.occasion} onChange={e => set('occasion', e.target.value)}><option value="">—</option><option>Nuevo</option><option>Usado</option><option>Service</option><option>Postventa</option></select></label>
         )}
-        {!editing && <label>Stock inicial en Depo Central<input type="number" min="0" value={form.stock_nucleo} onChange={e => set('stock_nucleo', e.target.value)} /></label>}
-        <label>Mínimo Depo Central (recompra)<input type="number" min="0" value={form.reorder_nucleo} onChange={e => set('reorder_nucleo', e.target.value)} /></label>
+        {!editing && <label>Stock inicial en DEPOSITO MARKETING ROSARIO<input type="number" min="0" value={form.stock_nucleo} onChange={e => set('stock_nucleo', e.target.value)} /></label>}
+        <label>Mínimo DEPOSITO MARKETING ROSARIO (recompra)<input type="number" min="0" value={form.reorder_nucleo} onChange={e => set('reorder_nucleo', e.target.value)} /></label>
         <label>Demora del proveedor (días)<input type="number" min="0" value={form.lead_time_days} onChange={e => set('lead_time_days', e.target.value)} /></label>
+      </div>
+      <div className="full-width photo-upload">
+        <label>Fotos del material (se guardan con el nombre del material)
+          <input type="file" accept="image/*" multiple onChange={e => set('photoFiles', Array.from(e.target.files || []))} />
+        </label>
+        {form.photoFiles?.length > 0 && <small className="muted">{form.photoFiles.length} foto(s) para subir: {form.photoFiles.map(f => f.name).join(', ')}</small>}
+        {editing && form.photo_urls?.length > 0 && <small className="muted">Ya tiene {form.photo_urls.length} foto(s); las nuevas se suman.</small>}
       </div>
       {editing && <p className="muted small">El stock no se edita acá. Para corregirlo usá «Ajustar stock» (queda registrado con motivo).</p>}
     </Modal>
@@ -919,7 +1032,7 @@ function MovementHub({ pending, lines, onClose, onSend, onReceive }) {
         <div className="card-head"><h2>{view === 'menu' ? 'Nuevo movimiento' : 'Recibir un envío'}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
         {view === 'menu' ? (
           <div className="hub-choices">
-            <button type="button" className="hub-btn" onClick={onSend}><strong>Enviar</strong><span>Armá la lista de materiales y mandala a Santa Fe, Cañada, Funes o un concesionario.</span></button>
+            <button type="button" className="hub-btn" onClick={onSend}><strong>Enviar</strong><span>Armá la lista de materiales y mandala al DEPOSITO MARKETING SANTA FE o a un concesionario.</span></button>
             <button type="button" className="hub-btn" onClick={() => setView('recibir')}><strong>Recibir{pending.length ? ` (${pending.length})` : ''}</strong><span>Controlá lo que llegó: ✓ si está bien, ✗ si falta algo.</span></button>
           </div>
         ) : (
@@ -970,7 +1083,9 @@ function SendModal({ modal, setModal, items, destinations, onClose, onSubmit }) 
       </div>
       <button type="button" className="secondary-btn add-line-btn" onClick={addLine}>+ Agregar otro material</button>
       <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
-      <p className="muted small">Todo sale del Depo Central ahora y queda «en camino». Se suma al stock del destino cuando lo reciban y lo controlen.</p>
+      {destinations.find(d => d.id === modal.destination_id)?.is_depot === false
+        ? <p className="muted small">Concesionario: sale del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Cuando el concesionario te avise que le llegó, lo marcás como recibido en «En camino» y recién ahí figura en lo que tiene.</p>
+        : <p className="muted small">Todo sale del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Se suma al stock del depósito cuando lo reciban y lo controlen.</p>}
     </Modal>
   );
 }
@@ -1032,7 +1147,7 @@ function EventModal({ modal, setModal, items, availableOf, onClose, onSubmit }) 
         </>
       )}
       <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
-      <p className="muted small">Guardar reserva los elementos para esas fechas: nadie más puede usarlos en otro evento que se pise. El stock sale del Depo Central recién cuando tocás «Entregar materiales».</p>
+      <p className="muted small">Guardar reserva los elementos para esas fechas: nadie más puede usarlos en otro evento que se pise. El stock sale del DEPOSITO MARKETING ROSARIO recién cuando tocás «Entregar materiales».</p>
     </Modal>
   );
 }
@@ -1042,7 +1157,7 @@ function WithdrawEventModal({ modal, setModal, onClose, onSubmit }) {
     <Modal title="Entregar materiales del evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Entregar y descontar stock">
       <p><strong>{modal.event.event_name}</strong></p>
       <label className="full-width notes-label">Quién retira los materiales *<input required value={modal.by} onChange={e => setModal(p => ({ ...p, by: e.target.value }))} placeholder="Nombre y apellido" /></label>
-      <p className="muted small">Los elementos reservados salen ahora del Depo Central. Después podés imprimir el retiro para que lo firmen.</p>
+      <p className="muted small">Los elementos reservados salen ahora del DEPOSITO MARKETING ROSARIO. Después podés imprimir el retiro para que lo firmen.</p>
     </Modal>
   );
 }
@@ -1051,7 +1166,7 @@ function ReturnEventModal({ modal, setModal, onClose, onSubmit }) {
   const setLine = (i, v) => setModal(p => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, qty_returned: v } : l)) }));
   return (
     <Modal title="Registrar regreso del evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Confirmar regreso">
-      <p className="muted small">Indicá cuánto volvió de cada elemento. Lo que vuelve se suma al Depo Central.</p>
+      <p className="muted small">Indicá cuánto volvió de cada elemento. Lo que vuelve se suma al DEPOSITO MARKETING ROSARIO.</p>
       <div className="send-lines">
         {modal.lines.map((l, i) => (
           <div key={l.id} className="send-line">
