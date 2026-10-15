@@ -26,7 +26,7 @@ const driveId = (u) => (String(u).match(/\/d\/([\w-]+)/) || [])[1];
 const photoThumb = (u, w = 160) => (driveId(u) ? `https://drive.google.com/thumbnail?id=${driveId(u)}&sz=w${w}` : u);
 function Thumb({ url, alt, w = 160 }) {
   const [tries, setTries] = useState(0);
-  if (tries > 2) return <span className="thumb-fail" title="No se pudo cargar. Tocá para abrir la foto.">📷</span>;
+  if (tries > 2) return <span className="thumb-fail" title="Foto no disponible: el archivo no se encuentra o no se puede abrir">❓</span>;
   const src = photoThumb(url, w) + (tries ? `${driveId(url) ? '&' : '?'}r=${tries}` : '');
   return <img key={tries} src={src} alt={alt} loading="lazy" decoding="async" referrerPolicy="no-referrer"
     onError={() => setTimeout(() => setTries(t => t + 1), 800 * (tries + 1))} />;
@@ -294,16 +294,6 @@ export default function App() {
   }
 
   function openReception(sh) {
-    // Concesionarios (sin acceso a la plataforma): lo marca el equipo cuando el concesionario avisa que le llegó
-    if (!destById[sh.destination_id]?.is_depot && !isPunto) {
-      const ls = linesByShipment[sh.id] || [];
-      setModal({
-        type: 'confirm', title: 'Marcar como recibido', yes: 'Sí, ya le llegó',
-        text: `¿${sh.destination_name} te avisó que ya recibió este envío (${ls.map(l => `${l.items?.name} ×${l.qty}`).join(', ')})? Se suma a lo que tiene el concesionario.`,
-        onYes: () => run(supabase.rpc('receive_shipment', { p_shipment_id: sh.id, p_lines: ls.map(l => ({ movement_id: l.id, ok: true })), p_notes: null }), 'Marcado como recibido. Ya figura en el concesionario.')
-      });
-      return;
-    }
     const lines = (linesByShipment[sh.id] || []).map(m => ({ movement_id: m.id, name: m.items?.name, qty: m.qty, ok: null, qty_received: 0, note: '' }));
     setError(''); setNotice('');
     setModal({ type: 'receive', shipment: sh, lines, notes: '' });
@@ -489,6 +479,18 @@ export default function App() {
       ];
 
   const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: isPunto ? 'Por recibir' : 'Envíos en camino', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Movimientos', eventos: 'Eventos', historial: 'Historial' };
+  const helps = {
+    dashboard: 'Resumen de lo que necesita atención hoy: alertas de stock, envíos en camino, eventos y diferencias de recepción.',
+    stock: 'Catálogo de materiales con su stock en el DEPOSITO MARKETING ROSARIO. Buscá o elegí una categoría para ver la lista. Con «Ajustar stock» corregís cantidades dejando motivo.',
+    depositos: 'Stock de cada depósito y concesionario. Santa Fe y Cañada controlan lo que reciben; en los demás concesionarios solo queda el registro de lo enviado.',
+    mideposito: 'El stock de tu depósito. Sube cuando confirmás la recepción de un envío y baja con cada entrega.',
+    recepcion: isPunto ? 'Envíos que salieron hacia tu depósito. Tocá Recibir y marcá ✓ si llegó todo bien o ✗ si falta algo.' : 'Envíos que salieron del DEPOSITO MARKETING ROSARIO y todavía no fueron recibidos por Santa Fe o Cañada.',
+    ingresos: 'Mercadería que entra al DEPOSITO MARKETING ROSARIO (compras o devoluciones). Suma al stock.',
+    retiros: 'Salidas del DEPOSITO MARKETING ROSARIO por regalos, usos internos o incidencias. Descuenta del stock.',
+    movimientos: 'Todos los envíos desde Rosario. «Nuevo movimiento» sirve para enviar o para recibir.',
+    eventos: 'Cada evento reserva materiales para sus fechas. El stock recién sale al tocar «Entregar materiales» y vuelve al registrar el regreso.',
+    historial: 'Registro de todo lo que entró, salió o se movió, con fecha y responsable.'
+  };
   const myDest = destById[selectedDest];
   const roleLabel = { admin: 'Administrador', editor: 'Editor', punto: 'Depósito', viewer: 'Solo lectura' }[role];
 
@@ -510,6 +512,7 @@ export default function App() {
           <div>
             <small>Gestión de inventario</small>
             <h1>{titles[tab]}</h1>
+            {helps[tab] && <p className="screen-help">{helps[tab]}</p>}
           </div>
           <div className="topbar-actions">
             {isStaff && tab === 'stock' && <button className="primary-btn" onClick={() => { setEditingItem(null); setForm(emptyItem); setModal({ type: 'item' }); }}>+ Nuevo material</button>}
@@ -524,14 +527,14 @@ export default function App() {
         {notice && <div className="notice-banner">{notice}</div>}
 
         {loading ? <div className="card">Cargando...</div> :
-          tab === 'dashboard' ? <Dashboard items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} toReview={toReview} linesByShipment={linesByShipment} onReview={reviewShipment} events={events} history={history} onGo={setTab} /> :
+          tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} toReview={toReview} linesByShipment={linesByShipment} onReview={reviewShipment} events={events} history={history} onGo={setTab} /> :
           tab === 'stock' ? <StockTable items={filteredItems} inDepots={inDepots} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter}
               onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', sku: item.sku || '' }); setModal({ type: 'item' }); }}
               onAdjust={(item) => setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reason: '', place: 'DEPOSITO MARKETING ROSARIO' })}
               onDelete={deleteItem} onPhotos={(item) => setModal({ type: 'photos', item })} /> :
           tab === 'depositos' || tab === 'mideposito' ? (
             <DepositoView
-              lastSent={lastSent} isDepot={Boolean(destById[selectedDest]?.is_depot)} isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={setSelectedDest}
+              sentList={shipments.filter(x => x.destination_id === selectedDest)} linesByShipment={linesByShipment} lastSent={lastSent} isDepot={Boolean(destById[selectedDest]?.is_depot)} isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={setSelectedDest}
               rows={destStock.filter(r => r.destination_id === selectedDest)} status={pointStatus.filter(p => p.destination_id === selectedDest)}
               itemById={itemById} inTransit={inTransit.filter(m => m.destination_id === selectedDest)} onGoReceive={() => setTab('recepcion')}
               onDeliver={(r) => setModal({ type: 'pwithdraw', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' })}
@@ -542,7 +545,7 @@ export default function App() {
           tab === 'recepcion' ? <ReceptionTable rows={inTransit} lines={linesByShipment} canReceive={isStaff || isPunto} onReceive={openReception} /> :
           tab === 'ingresos' ? <RestockTable rows={restocks} /> :
           tab === 'retiros' ? <WithdrawalTable rows={withdrawals} /> :
-          tab === 'movimientos' ? <MovementTable rows={shipments} lines={linesByShipment} canReview={isStaff} onReview={reviewShipment} /> :
+          tab === 'movimientos' ? <MovementTable rows={shipments} lines={linesByShipment} canReview={isStaff} onReview={reviewShipment} destById={destById} /> :
           tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} itemById={itemById} isStaff={isStaff} onNew={() => { setError(''); setNotice(''); setModal(emptyEvent()); }} onPrint={(ev) => setModal({ type: 'retiro', event: ev })} onWithdraw={(ev) => setModal({ type: 'withdrawEvent', event: ev, by: ev.carried_by || '' })} onReturn={(ev) => setModal({ type: 'returnEvent', event: ev, by: '', lines: eventItems.filter(ei => ei.event_id === ev.id && ei.remito_salida_date && !ei.remito_llegada_ok).map(ei => ({ id: ei.id, name: ei.items?.name, qty: ei.qty_allocated, qty_returned: ei.qty_allocated })) })} onCancel={cancelEvent} /> :
           tab === 'historial' ? <HistoryTab rows={history} /> : null
         }
@@ -598,7 +601,7 @@ function NoAccess({ onSignOut, message }) {
   );
 }
 
-function Dashboard({ items, centralAlerts, pointAlerts, inTransit, toReview, linesByShipment, onReview, events, history, onGo }) {
+function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, toReview, linesByShipment, onReview, events, history, onGo }) {
   const urgent = inTransit.filter(m => daysSince(m.created_at) > 5).length;
   return (
     <>
@@ -608,6 +611,22 @@ function Dashboard({ items, centralAlerts, pointAlerts, inTransit, toReview, lin
         <Stat label={urgent ? `Envíos en camino (${urgent} hace +5 días)` : 'Envíos en camino'} value={inTransit.length} tone={urgent ? 'warning' : ''} onClick={() => onGo('recepcion')} />
         <Stat label="Eventos abiertos" value={events.filter(e => e.status === 'abierto').length} />
       </section>
+
+      {(() => {
+        const todo = events.map(e => ({ e, st: eventState(e, eventItems.filter(l => l.event_id === e.id)) })).filter(x => x.st?.alert);
+        return todo.length > 0 && (
+          <section className="card review-card">
+            <h2>Eventos que necesitan acción ({todo.length})</h2>
+            {todo.map(({ e, st }) => (
+              <div key={e.id} className="review-item">
+                <div className="review-head"><strong>{e.event_name}</strong><small>{fmtRange(e)}</small></div>
+                <span className={`evt-state ${st.cls}`}>{st.text}</span>
+                <button className="secondary-btn small-btn" onClick={() => onGo('eventos')}>Ir a Eventos</button>
+              </div>
+            ))}
+          </section>
+        );
+      })()}
 
       {toReview.length > 0 && (
         <section className="card review-card">
@@ -716,6 +735,7 @@ function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categ
           {!items.length && <tr><td colSpan="7" className="muted">No hay materiales</td></tr>}
         </tbody>
       </table>
+      <p className="muted small photo-legend">❓ = la foto no está disponible (el archivo no se encuentra en Drive o no se puede abrir). Sin ícono = ese material no tiene foto cargada. Podés reemplazarla con «Editar».</p>
       {pages > 1 && (
         <div className="pager">
           <button type="button" className="secondary-btn" disabled={cur === 0} onClick={() => setPage(cur - 1)}>← Anterior</button>
@@ -728,7 +748,7 @@ function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categ
   );
 }
 
-function DepositoView({ lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onMin, onAdjust }) {
+function DepositoView({ sentList, linesByShipment, lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onMin, onAdjust }) {
   const statusByItem = Object.fromEntries(status.map(s => [s.item_id, s]));
   const dest = destinations.find(d => d.id === selectedDest);
   return (
@@ -740,6 +760,24 @@ function DepositoView({ lastSent, isDepot, isPunto, canOperate, destinations, se
               {destinations.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </label>
+        </section>
+      )}
+      {!isDepot && (
+        <section className="card" style={{ marginBottom: 18 }}>
+          <h2>Envíos registrados</h2>
+          <table>
+            <thead><tr><th>Fecha</th><th>Materiales enviados</th><th>Recibe</th><th>Enviado por</th></tr></thead>
+            <tbody>
+              {sentList.map(sh => (
+                <tr key={sh.id}>
+                  <td>{fmtDate(sh.created_at)}</td>
+                  <td><ul className="ship-lines">{(linesByShipment[sh.id] || []).map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul></td>
+                  <td>{sh.recipient_name || '—'}</td><td>{sh.created_by_name}</td>
+                </tr>
+              ))}
+              {!sentList.length && <tr><td colSpan="4" className="muted">Todavía no se registraron envíos a este concesionario.</td></tr>}
+            </tbody>
+          </table>
         </section>
       )}
       {inTransit.length > 0 && (
@@ -754,11 +792,11 @@ function DepositoView({ lastSent, isDepot, isPunto, canOperate, destinations, se
         </div>
         {isDepot
           ? <p className="muted small">El stock sube cuando confirmás la recepción de un envío o cuando cargás stock propio. Baja con cada entrega. El punto de restock sugerido se calcula con tus entregas de los últimos 90 días.</p>
-          : <p className="muted small">Concesionario: acá solo ves lo que le enviamos y cuándo. Los envíos descuentan del DEPOSITO MARKETING ROSARIO al enviarse y se suman acá cuando los marcás como recibidos. Lo que el concesionario va usando se descuenta a mano con «Ajustar», y la reposición se pide por mensaje.</p>}
+          : <p className="muted small">Concesionario: acá queda el registro de lo que se le envió, con fecha y cantidad. Lo que el concesionario va usando se descuenta a mano con «Ajustar», y la reposición se pide por mensaje (no genera alertas en la plataforma).</p>}
         <table>
           <thead>{isDepot
             ? <tr><th>Material</th><th>Stock</th><th>Punto de restock</th><th>Reponer</th><th>Estado</th>{canOperate && <th></th>}</tr>
-            : <tr><th>Material</th><th>Tiene (según envíos)</th><th>Último envío</th>{canOperate && <th></th>}</tr>}</thead>
+            : <tr><th>Material</th><th>Total enviado (menos lo ajustado)</th><th>Último envío</th>{canOperate && <th></th>}</tr>}</thead>
           <tbody>
             {rows.map(r => {
               const s = statusByItem[r.item_id];
@@ -861,7 +899,7 @@ function WithdrawalTable({ rows }) {
   );
 }
 
-function MovementTable({ rows, lines, canReview, onReview }) {
+function MovementTable({ rows, lines, canReview, onReview, destById }) {
   const label = { en_transito: 'En camino', recibido: 'Recibido ✓', recibido_con_diferencias: 'Con diferencias' };
   const chip = { en_transito: 'en_transito', recibido: 'recibido', recibido_con_diferencias: 'recibido_con_diferencia' };
   return (
@@ -873,7 +911,7 @@ function MovementTable({ rows, lines, canReview, onReview }) {
           <tr key={sh.id}>
             <td>{fmtDate(sh.created_at)}</td><td>{sh.destination_name}</td>
             <td><ShipmentLines lines={lines[sh.id] || []} />{sh.reception_notes && <small className="obs-text">“{sh.reception_notes}”</small>}</td>
-            <td><span className={`chip ${chip[sh.status]}`}>{label[sh.status]}</span>
+            <td><span className={`chip ${chip[sh.status]}`}>{destById?.[sh.destination_id]?.is_depot === false ? 'Registrado' : label[sh.status]}</span>
               {sh.status === 'recibido_con_diferencias' && (sh.reviewed ? <small>revisado por {sh.reviewed_by_name}</small> : canReview && <button className="link-btn" onClick={() => onReview(sh)}>Marcar revisado</button>)}</td>
             <td>{sh.received_by_name ? <>{sh.received_by_name}<small>{fmtDateTime(sh.received_at)}</small></> : '—'}</td>
             <td>{sh.created_by_name}</td>
@@ -885,6 +923,21 @@ function MovementTable({ rows, lines, canReview, onReview }) {
   );
 }
 
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+// Estado práctico de un evento abierto y qué falta hacer
+function eventState(e, lines) {
+  if (e.status !== 'abierto') return null;
+  const t = todayStr();
+  const start = e.start_date || e.event_date, end = e.end_date || e.start_date || e.event_date;
+  const out = lines.filter(l => l.remito_salida_date);
+  const pendingOut = lines.some(l => !l.remito_salida_date);
+  const outNow = out.some(l => !l.remito_llegada_ok);
+  if (pendingOut && start && start <= t) return { cls: 'alerta', text: start === t ? 'Empieza hoy y falta entregar los materiales' : 'Ya empezó y falta entregar los materiales', alert: true };
+  if (pendingOut) return { cls: 'reservado', text: 'Reservado · próximo paso: entregar los materiales' };
+  if (outNow && end && end < t) return { cls: 'alerta', text: 'Ya terminó y faltan registrar los materiales devueltos', alert: true };
+  if (outNow) return { cls: 'entregado', text: 'Entregado · próximo paso: registrar el regreso al terminar' };
+  return null;
+}
 const EVENT_LABELS = { abierto: 'Abierto', cerrado: 'Cerrado', cancelado: 'Cancelado' };
 const fmtRange = (e) => {
   const a = e.start_date || e.event_date, b = e.end_date || e.event_date;
@@ -910,6 +963,7 @@ function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, on
                   </div>
                   <span className={`chip ${e.status}`}>{EVENT_LABELS[e.status] || e.status}</span>
                 </div>
+                {(() => { const st = eventState(e, lines); return st ? <span className={`evt-state ${st.cls}`}>{st.text}</span> : null; })()}
                 <table>
                   <thead><tr><th>Elemento</th><th>Cantidad</th><th>Entrega</th><th>Regreso</th></tr></thead>
                   <tbody>
@@ -1090,7 +1144,7 @@ function MovementHub({ pending, lines, onClose, onSend, onReceive }) {
         <div className="card-head"><h2>{view === 'menu' ? 'Nuevo movimiento' : 'Recibir un envío'}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
         {view === 'menu' ? (
           <div className="hub-choices">
-            <button type="button" className="hub-btn" onClick={onSend}><strong>Enviar</strong><span>Armá la lista de materiales y mandala al DEPOSITO MARKETING SANTA FE o a un concesionario.</span></button>
+            <button type="button" className="hub-btn" onClick={onSend}><strong>Enviar</strong><span>Armá la lista de materiales y mandala a un depósito (Santa Fe, Cañada) o registrá lo que se le entregó a un concesionario.</span></button>
             <button type="button" className="hub-btn" onClick={() => setView('recibir')}><strong>Recibir{pending.length ? ` (${pending.length})` : ''}</strong><span>Controlá lo que llegó: ✓ si está bien, ✗ si falta algo.</span></button>
           </div>
         ) : (
@@ -1142,8 +1196,8 @@ function SendModal({ modal, setModal, items, destinations, onClose, onSubmit }) 
       <button type="button" className="secondary-btn add-line-btn" onClick={addLine}>+ Agregar otro material</button>
       <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
       {destinations.find(d => d.id === modal.destination_id)?.is_depot === false
-        ? <p className="muted small">Concesionario: sale del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Cuando el concesionario te avise que le llegó, lo marcás como recibido en «En camino» y recién ahí figura en lo que tiene.</p>
-        : <p className="muted small">Todo sale del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Se suma al stock del depósito cuando lo reciban y lo controlen.</p>}
+        ? <p className="muted small">Concesionario: se descuenta del DEPOSITO MARKETING ROSARIO y queda registrado con la fecha de hoy y las cantidades. Es solo un registro: no necesita recepción.</p>
+        : <p className="muted small">Se descuenta del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Cuando llegue, quien recibe controla cada material (✓ o ✗) y las cantidades se suman a su stock.</p>}
     </Modal>
   );
 }
