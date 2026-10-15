@@ -650,10 +650,14 @@ function Stat({ label, value, tone, onClick }) {
 function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete, onPhotos }) {
   const PAGE = 25;
   const [page, setPage] = useState(0);
+  const [showAll, setShowAll] = useState(false);
   useEffect(() => { setPage(0); }, [query, categoryFilter, brandFilter]);
+  // La lista (y sus fotos) no se carga hasta que se busca, se filtra o se pide ver todo
+  const searching = showAll || query.trim() !== '' || categoryFilter !== 'Todas' || brandFilter !== 'Todas';
+  const catCounts = CATEGORIES.map(c => [c, allItems.filter(i => i.category === c).length]).filter(x => x[1] > 0);
   const pages = Math.max(1, Math.ceil(allItems.length / PAGE));
   const cur = Math.min(page, pages - 1);
-  const items = allItems.slice(cur * PAGE, cur * PAGE + PAGE);
+  const items = searching ? allItems.slice(cur * PAGE, cur * PAGE + PAGE) : [];
   return (
     <section className="card">
       <div className="card-head"><h2>Materiales</h2></div>
@@ -662,6 +666,16 @@ function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categ
         <label className="filter-label">Categoría<select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option>Todas</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></label>
         <label className="filter-label">Marca<select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}><option>Todas</option><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select></label>
       </div>
+      {!searching && (
+        <div className="empty-state">
+          <p><strong>{allItems.length} materiales cargados.</strong> Buscá por nombre, SKU o marca, o elegí una categoría:</p>
+          <div className="cat-chips">
+            {catCounts.map(([c, n]) => <button type="button" key={c} className="chip-btn" onClick={() => setCategoryFilter(c)}>{c} <span>{n}</span></button>)}
+          </div>
+          <button type="button" className="link-btn" onClick={() => setShowAll(true)}>Ver todo el listado</button>
+        </div>
+      )}
+      {searching && (<>
       <table>
         <thead><tr><th></th><th>Material</th><th>Categoría</th><th>Marca</th><th>DEPOSITO MARKETING ROSARIO</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
         <tbody>
@@ -696,6 +710,7 @@ function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categ
           <button type="button" className="secondary-btn" disabled={cur >= pages - 1} onClick={() => setPage(cur + 1)}>Siguiente →</button>
         </div>
       )}
+      </>)}
     </section>
   );
 }
