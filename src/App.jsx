@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from './lib/supabase';
 import './styles.css';
 import './styles-extra.css';
+import './styles-pro.css';
 
 const CATEGORIES = [
   'Alfombras',
@@ -42,6 +43,36 @@ const friendlyError = (m) => {
   if (/Bucket not found|The resource was not found/i.test(t)) return 'Falta configurar el almacenamiento de fotos (PASO 4 en Supabase).';
   return t;
 };
+// Íconos simples en línea (sin librerías)
+const NAV_ICONS = {
+  dashboard: 'M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z',
+  stock: 'M3 8l9-5 9 5-9 5-9-5zM3 8v8l9 5 9-5V8M12 13v8',
+  depositos: 'M3 10l9-6 9 6v10H3zM9 20v-6h6v6',
+  mideposito: 'M3 10l9-6 9 6v10H3zM9 20v-6h6v6',
+  recepcion: 'M2 6h11v9H2zM13 9h4l3 3v3h-7zM6 18.5a1.5 1.5 0 1 0 0 .01M16 18.5a1.5 1.5 0 1 0 0 .01',
+  ingresos: 'M12 3v12M7 10l5 5 5-5M4 20h16',
+  retiros: 'M12 15V3M7 8l5-5 5 5M4 20h16',
+  movimientos: 'M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4',
+  eventos: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+  historial: 'M12 7v5l3 2M3 12a9 9 0 1 0 3-6.7M3 4v4h4'
+};
+function NavIcon({ name }) {
+  return <svg className="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d={NAV_ICONS[name] || NAV_ICONS.dashboard} /></svg>;
+}
+// Número que sube hasta su valor (una sola vez, liviano)
+function CountUp({ value }) {
+  const n = Number(value);
+  const [v, setV] = useState(Number.isFinite(n) ? 0 : value);
+  useEffect(() => {
+    if (!Number.isFinite(n)) { setV(value); return; }
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || n === 0) { setV(n); return; }
+    let raf; const t0 = performance.now(); const dur = 700;
+    const tick = (t) => { const k = Math.min(1, (t - t0) / dur); setV(Math.round(n * (1 - Math.pow(1 - k, 3)))); if (k < 1) raf = requestAnimationFrame(tick); };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [n, value]);
+  return <>{v}</>;
+}
 const BRANDS = ['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar'];
 
 const REASONS = [
@@ -466,7 +497,7 @@ export default function App() {
 
   // ---------- Render ----------
   if (!session) return <Login onSubmit={handleSignIn} error={error} />;
-  if (profile === undefined) return <div className="login-screen"><div className="login-card">Cargando...</div></div>;
+  if (profile === undefined) return <div className="login-screen"><div className="skeleton-wrap" aria-busy="true" style={{ width: 'min(420px, 90vw)' }}><div className="skeleton sk-row" /><div className="skeleton sk-block" /></div></div>;
   if (!profile || role === 'none') return <NoAccess onSignOut={() => supabase.auth.signOut()} />;
   if (isPunto && !profile.destination_id) return <NoAccess onSignOut={() => supabase.auth.signOut()} message="Tu usuario todavía no tiene un depósito asignado. Pedile a un administrador que lo configure." />;
 
@@ -497,9 +528,9 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">MARKETING<span>Control de stock</span></div>
+        <div className="brand"><img src="/logo.webp" alt="" width="40" height="40" /><div>MARKETING<span>Control de stock</span></div></div>
         {nav.map(([key, label]) => (
-          <button key={key} className={tab === key ? 'nav-btn active' : 'nav-btn'} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>
+          <button key={key} className={tab === key ? 'nav-btn active' : 'nav-btn'} onClick={() => { setTab(key); setError(''); setNotice(''); }}><NavIcon name={key} />{label}</button>
         ))}
         <div className="sidebar-footer">
           <div className="whoami"><strong>{profile.full_name || session.user.email}</strong><small>{roleLabel}{isPunto && myDest ? ` · ${myDest.name}` : ''}</small></div>
@@ -526,7 +557,7 @@ export default function App() {
         {error && <div className="error-banner">{error}</div>}
         {notice && <div className="notice-banner">{notice}</div>}
 
-        {loading ? <div className="card">Cargando...</div> :
+        {loading ? <div className="skeleton-wrap" aria-busy="true"><div className="skeleton sk-row" /><div className="skeleton sk-row" /><div className="skeleton sk-block" /></div> :
           tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} toReview={toReview} linesByShipment={linesByShipment} onReview={reviewShipment} events={events} history={history} onGo={setTab} /> :
           tab === 'stock' ? <StockTable items={filteredItems} inDepots={inDepots} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter}
               onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', sku: item.sku || '' }); setModal({ type: 'item' }); }}
@@ -575,12 +606,19 @@ export default function App() {
 
 function Login({ onSubmit, error }) {
   return (
-    <div className="login-screen">
+    <div className="login-screen pro-login">
+      <section className="login-hero" aria-hidden="true">
+        <div className="hero-figure">
+          <img src="/hero.webp" alt="" width="720" height="405" />
+          <div className="hero-rings"><i /><i /><i /></div>
+        </div>
+        <h2>Todo el material de marketing, a la vista.</h2>
+      </section>
       <form className="login-card" onSubmit={onSubmit}>
         <div className="brand dark-brand">MARKETING<span>Control de stock</span></div>
         <h2>Ingresar</h2>
-        <input type="email" name="email" placeholder="Email" required />
-        <input type="password" name="password" placeholder="Contraseña" required />
+        <input type="email" name="email" placeholder="Email" autoComplete="username" required />
+        <input type="password" name="password" placeholder="Contraseña" autoComplete="current-password" required />
         <button className="primary-btn" type="submit">Ingresar</button>
         {error && <p className="error-banner">{error}</p>}
       </form>
@@ -607,7 +645,7 @@ function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, t
     <>
       <section className="stats-grid">
         <Stat label="Materiales" value={items.length} />
-        <Stat label="Alertas de stock" value={centralAlerts.length + pointAlerts.length} tone="warning" />
+        <Stat label="Alertas de stock" value={centralAlerts.length + pointAlerts.length} tone={centralAlerts.length + pointAlerts.length > 0 ? "warning" : ""} />
         <Stat label={urgent ? `Envíos en camino (${urgent} hace +5 días)` : 'Envíos en camino'} value={inTransit.length} tone={urgent ? 'warning' : ''} onClick={() => onGo('recepcion')} />
         <Stat label="Eventos abiertos" value={events.filter(e => e.status === 'abierto').length} />
       </section>
@@ -676,7 +714,7 @@ function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, t
 }
 
 function Stat({ label, value, tone, onClick }) {
-  return <div className={`stat ${tone || ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}><strong>{value}</strong><span>{label}</span></div>;
+  return <div className={`stat ${tone || ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}><strong><CountUp value={value} /></strong><span>{label}</span></div>;
 }
 
 function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete, onPhotos }) {
