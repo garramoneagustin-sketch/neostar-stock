@@ -68,9 +68,6 @@ const NAV_ICONS = {
   eventos: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
   historial: 'M12 7v5l3 2M3 12a9 9 0 1 0 3-6.7M3 4v4h4'
 };
-function NavIcon({ name }) {
-  return <svg className="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d={NAV_ICONS[name] || NAV_ICONS.dashboard} /></svg>;
-}
 // Número que sube hasta su valor (una sola vez, liviano)
 function CountUp({ value }) {
   const n = Number(value);
@@ -84,6 +81,10 @@ function CountUp({ value }) {
     return () => cancelAnimationFrame(raf);
   }, [n, value]);
   return <>{v}</>;
+}
+const EXTRA_ICONS = { menu: 'M4 6h16M4 12h16M4 18h16', open: 'M9 6l6 6-6 6', close: 'M15 6l-6 6 6 6', logout: 'M9 4H5v16h4M16 8l4 4-4 4M20 12H9' };
+function NavIcon({ name }) {
+  return <svg className="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d={NAV_ICONS[name] || EXTRA_ICONS[name] || NAV_ICONS.dashboard} /></svg>;
 }
 const BRANDS = ['Kia', 'Jeep', 'RAM', 'Nissan', 'BYD', 'Suzuki', 'Subaru', 'Honda', 'Neostar'];
 
@@ -124,6 +125,21 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(undefined); // undefined = cargando, null = sin perfil
   const [tab, setTab] = useState('dashboard');
+  // Menú lateral: expandido o solo íconos. En pantallas angostas queda siempre en íconos y se abre encima del contenido.
+  const [navCollapsed, setNavCollapsed] = useState(() => { try { return localStorage.getItem('navCollapsed') === '1'; } catch { return false; } });
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 900px)').matches);
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const f = () => { setNarrow(mq.matches); setNavOpen(false); };
+    mq.addEventListener('change', f);
+    return () => mq.removeEventListener('change', f);
+  }, []);
+  const toggleNav = () => {
+    if (narrow) { setNavOpen(o => !o); return; }
+    setNavCollapsed(c => { try { localStorage.setItem('navCollapsed', c ? '0' : '1'); } catch { /* sin almacenamiento */ } return !c; });
+  };
+  const rail = narrow ? !navOpen : navCollapsed;
   const [items, setItems] = useState([]);
   const [destinations, setDestinations] = useState([]);
   const [destStock, setDestStock] = useState([]);
@@ -514,10 +530,10 @@ export default function App() {
   if (isPunto && !profile.destination_id) return <NoAccess onSignOut={() => supabase.auth.signOut()} message="Tu usuario todavía no tiene un depósito asignado. Pedile a un administrador que lo configure." />;
 
   const nav = isPunto
-    ? [['mideposito', 'Mi depósito'], ['recepcion', `Por recibir${inTransit.length ? ` (${inTransit.length})` : ''}`], ['historial', 'Historial']]
+    ? [['mideposito', 'Mi depósito'], ['recepcion', 'Por recibir', inTransit.length], ['historial', 'Historial']]
     : [
         ['dashboard', 'Dashboard'], ['stock', 'Materiales'], ['depositos', 'Depósitos y puntos'],
-        ['recepcion', `En camino${inTransit.length ? ` (${inTransit.length})` : ''}`],
+        ['recepcion', 'En camino', inTransit.length],
         ['ingresos', 'Ingresos'], ['retiros', 'Retiros'], ['movimientos', 'Movimientos'], ['eventos', 'Eventos'], ['historial', 'Historial']
       ];
 
@@ -538,15 +554,26 @@ export default function App() {
   const roleLabel = { admin: 'Administrador', editor: 'Editor', punto: 'Depósito', viewer: 'Solo lectura' }[role];
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><img src="/logo.webp" alt="" width="40" height="40" /><div>MARKETING<span>Control de stock</span></div></div>
-        {nav.map(([key, label]) => (
-          <button key={key} className={tab === key ? 'nav-btn active' : 'nav-btn'} onClick={() => { setTab(key); setError(''); setNotice(''); }}><NavIcon name={key} />{label}</button>
+    <div className={`app-shell ${rail ? 'nav-rail' : 'nav-wide'}${narrow ? ' nav-narrow' : ''}`}>
+      {narrow && navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
+      <aside className="sidebar" aria-label="Menú principal">
+        <div className="brand-row">
+          <div className="brand"><img src="/logo.webp" alt="" width="40" height="40" /><div>MARKETING<span>Control de stock</span></div></div>
+          <button type="button" className="side-toggle" onClick={toggleNav} title={narrow ? (navOpen ? 'Cerrar menú' : 'Abrir menú') : (rail ? 'Expandir menú' : 'Contraer menú')} aria-label="Mostrar u ocultar el menú">
+            <NavIcon name={narrow ? (navOpen ? 'close' : 'menu') : (rail ? 'open' : 'close')} />
+          </button>
+        </div>
+        {nav.map(([key, label, badge]) => (
+          <button key={key} className={tab === key ? 'nav-btn active' : 'nav-btn'} title={label} aria-label={label}
+            onClick={() => { setTab(key); setError(''); setNotice(''); if (narrow) setNavOpen(false); }}>
+            <NavIcon name={key} /><span className="nav-label">{label}</span>
+            {badge > 0 && <span className="nav-badge">{badge}</span>}
+          </button>
         ))}
         <div className="sidebar-footer">
+          <div className="avatar" title={profile.full_name || session.user.email}>{(profile.full_name || session.user.email || '?').trim().charAt(0).toUpperCase()}</div>
           <div className="whoami"><strong>{profile.full_name || session.user.email}</strong><small>{roleLabel}{isPunto && myDest ? ` · ${myDest.name}` : ''}</small></div>
-          <button className="logout-btn" onClick={() => supabase.auth.signOut()}>Cerrar sesión</button>
+          <button className="logout-btn" title="Cerrar sesión" aria-label="Cerrar sesión" onClick={() => supabase.auth.signOut()}><NavIcon name="logout" /><span className="nav-label">Cerrar sesión</span></button>
         </div>
       </aside>
 
