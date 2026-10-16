@@ -238,3 +238,17 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
   .card table { font-size: 14px; }
   th { font-size: 10px; letter-spacing: .03em; }
 }
+
+/* Diferencias de envío */
+.nav-badge.bad { background: #e5383b; color: #fff; }
+.diff-card { border: 2px solid #e5383b; background: #fff5f5; box-shadow: 6px 6px 0 #e5383b; }
+.diff-card h2 { color: #b42318; }
+.chip.con_diferencia { background: #e5383b; color: #fff; border-color: #e5383b; }
+
+/* Modales largos: se pueden recorrer y el botón de confirmar siempre se alcanza */
+@media screen { .modal { max-height: calc(100vh - 36px); max-height: calc(100dvh - 36px); overflow-y: auto; } }
+.check-extra { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); align-items: end; }
+.check-extra .link-btn { justify-self: start; padding-bottom: 12px; }
+.brand-row .brand { min-width: 0; gap: 10px; padding: 4px 0 22px 4px; font-size: 21px; }
+.nav-rail .brand-row .brand { padding: 0 0 4px; }
+.diff-card { margin-bottom: 22px; }
