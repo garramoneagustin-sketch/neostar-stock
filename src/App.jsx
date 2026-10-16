@@ -102,7 +102,11 @@ const MOVE_LABELS = {
   ajuste: 'Ajuste de stock',
   stock_inicial: 'Stock inicial',
   compra: 'Compra',
-  resolucion_diferencia: 'Resolución de diferencia'
+  resolucion_diferencia: 'Resolución de diferencia',
+  devolucion: 'Devolución a DEPOSITO MARKETING ROSARIO',
+  salida_evento: 'Salida a evento',
+  retorno_evento: 'Regreso de evento',
+  consumo_evento: 'Consumido en evento (no volvió)'
 };
 
 const DIFF_REASONS = [
@@ -164,6 +168,7 @@ export default function App() {
   const [destStock, setDestStock] = useState([]);
   const [pointStatus, setPointStatus] = useState([]);
   const [restocks, setRestocks] = useState([]);
+  const [reserved, setReserved] = useState({});
   const [withdrawals, setWithdrawals] = useState([]);
   const [movements, setMovements] = useState([]);
   const [shipments, setShipments] = useState([]);
@@ -221,13 +226,15 @@ export default function App() {
     setItems(it); setDestinations(ds); setDestStock(dst); setPointStatus(ps); setMovements(mv); setShipments(sh);
 
     if (profile?.role !== 'punto') {
-      const [rs, wd, ev, evi] = await Promise.all([
+      const [rs, wd, ev, evi, rsv] = await Promise.all([
         q(supabase.from('restocks').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('withdrawals').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('events').select('*').order('event_date', { ascending: false })),
-        q(supabase.from('event_items').select('*, items(name), events(event_name)').order('created_at', { ascending: false }))
+        q(supabase.from('event_items').select('*, items(name), events(event_name)').order('created_at', { ascending: false })),
+        q(supabase.rpc('reserved_by_item'))
       ]);
       setRestocks(rs); setWithdrawals(wd); setEvents(ev); setEventItems(evi);
+      setReserved(Object.fromEntries((rsv || []).map(r => [r.item_id, r.reserved])));
     }
     setError(errs[0] || '');
     setLoading(false);
@@ -351,11 +358,13 @@ export default function App() {
     const lines = d.lines.filter(l => l.item_id && Number(l.qty) > 0);
     if (!d.destination_id) { setError('Elegí el destino del envío'); return; }
     if (!lines.length) { setError('Agregá al menos un material con su cantidad'); return; }
+    const dealer = destinations.find(x => x.id === d.destination_id)?.is_depot === false;
     run(supabase.rpc('create_shipment', {
       p_destination_id: d.destination_id,
       p_items: lines.map(l => ({ item_id: l.item_id, qty: Number(l.qty) })),
-      p_recipient_name: d.recipient_name || null, p_notes: d.notes || null
-    }), 'Envío registrado. Queda «en camino» hasta que lo reciban y lo controlen.');
+      p_recipient_name: d.recipient_name || null, p_notes: d.notes || null,
+      p_origin_id: d.origin_id || null
+    }), dealer ? 'Envío registrado. Quedó como registro de lo enviado al concesionario.' : 'Envío registrado. Queda «en camino» hasta que lo reciban y lo controlen.');
   }
 
   function saveReception(e) {
@@ -429,9 +438,18 @@ export default function App() {
   function savePointStockIn(e) {
     e.preventDefault();
     if (!modal.item_id || Number(modal.qty) < 1) { setError('Falta material o cantidad'); return; }
+    if (!modal.notes?.trim()) { setError('Contá el motivo de la carga (no es para envíos de Rosario)'); return; }
     run(supabase.rpc('register_point_stock_in', {
       p_destination_id: modal.destination_id, p_item_id: modal.item_id, p_qty: Number(modal.qty), p_notes: modal.notes || null
     }), 'Carga registrada');
+  }
+
+  function saveReturn(e) {
+    e.preventDefault();
+    const r = modal;
+    if (Number(r.qty) < 1 || Number(r.qty) > r.available) { setError(`La cantidad tiene que estar entre 1 y ${r.available}`); return; }
+    run(supabase.rpc('register_return', { p_destination_id: r.destination_id, p_item_id: r.item_id, p_qty: Number(r.qty), p_notes: r.notes?.trim() || null }),
+      'Devolución registrada: se descontó de ' + r.place + ' y volvió a DEPOSITO MARKETING ROSARIO');
   }
 
   function saveMin(e) {
@@ -515,11 +533,12 @@ export default function App() {
   const destById = useMemo(() => Object.fromEntries(destinations.map(d => [d.id, d])), [destinations]);
   const itemById = useMemo(() => Object.fromEntries(items.map(i => [i.id, i])), [items]);
 
+  const depotIds = useMemo(() => new Set(destinations.filter(d => d.is_depot).map(d => d.id)), [destinations]);
   const inDepots = useMemo(() => {
     const acc = {};
-    destStock.forEach(r => { acc[r.item_id] = (acc[r.item_id] || 0) + r.qty; });
+    destStock.filter(r => depotIds.has(r.destination_id)).forEach(r => { acc[r.item_id] = (acc[r.item_id] || 0) + r.qty; });
     return acc;
-  }, [destStock]);
+  }, [destStock, depotIds]);
 
   const linesByShipment = useMemo(() => {
     const acc = {};
@@ -544,7 +563,6 @@ export default function App() {
     });
     return o;
   }, [movements]);
-  const depotIds = useMemo(() => new Set(destinations.filter(d => d.is_depot).map(d => d.id)), [destinations]);
   // Solo los depósitos (no los concesionarios) generan avisos de reposición en la plataforma
   const pointAlerts = useMemo(() => pointStatus.filter(p => p.status !== 'ok' && depotIds.has(p.destination_id)), [pointStatus, depotIds]);
 
@@ -566,13 +584,16 @@ export default function App() {
         return;
       }
       let detalle = '';
-      if (m.type === 'envio_destino') detalle = `→ ${m.destination || destById[m.destino_id]?.name || ''} · ${STATE_LABELS[m.estado] || m.estado}${m.recipient_name ? ' · recibe ' + m.recipient_name : ''}${m.received_by_name ? ' · recibió ' + m.received_by_name : ''}${m.reception_ok === false ? ' · ✗ ' + (DIFF_LABEL[m.diff_reason] || 'diferencia') + (m.diff_reason === 'de_mas' ? '' : ' · llegó ' + (m.qty_received ?? 0)) + (m.reception_note ? ' (' + m.reception_note + ')' : '') : ''}`;
+      if (m.type === 'envio_destino') detalle = `${m.origen && m.origen !== 'DEPOSITO MARKETING ROSARIO' && m.origen !== 'Depo Central' ? m.origen + ' ' : ''}→ ${m.destination || destById[m.destino_id]?.name || ''} · ${STATE_LABELS[m.estado] || m.estado}${m.recipient_name ? ' · recibe ' + m.recipient_name : ''}${m.received_by_name ? ' · recibió ' + m.received_by_name : ''}${m.reception_ok === false ? ' · ✗ ' + (DIFF_LABEL[m.diff_reason] || 'diferencia') + (m.diff_reason === 'de_mas' ? '' : ' · llegó ' + (m.qty_received ?? 0)) + (m.reception_note ? ' (' + m.reception_note + ')' : '') : ''}`;
       else if (m.type === 'resolucion_diferencia') detalle = `→ ${m.destination || ''} · ${RES_LABEL[m.reason_type] || m.reason_type}${m.reason_detail ? ' · ' + m.reason_detail : ''}`;
       else if (m.type === 'entrega') detalle = [m.origen, m.reason_detail, m.recipient_last_name, m.vehicle_plate].filter(Boolean).join(' · ');
       else if (m.type === 'ingreso_punto') detalle = [m.destination, m.notes].filter(Boolean).join(' · ');
-      else if (m.type === 'ajuste') detalle = [m.origen, m.notes, m.reason_detail].filter(Boolean).join(' · ');
+      else if (m.type === 'ajuste') detalle = [m.origen, m.qty_after != null ? `de ${m.qty_before} a ${m.qty_after}` : m.notes, m.reason_detail].filter(Boolean).join(' · ');
+      else if (m.type === 'devolucion') detalle = `${m.origen} → ${m.destination || 'DEPOSITO MARKETING ROSARIO'}${m.notes ? ' · ' + m.notes : ''}`;
+      else if (m.type === 'salida_evento' || m.type === 'retorno_evento' || m.type === 'consumo_evento') detalle = m.notes || '';
       else detalle = m.notes || '';
-      rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type] || m.type, item: m.items?.name, qty: m.qty, detalle, quien: m.person });
+      const signed = m.type === 'ajuste' && m.qty_after != null ? `${m.qty_after - m.qty_before > 0 ? '+' : '−'}${m.qty}` : m.qty;
+      rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type] || m.type, item: m.items?.name, qty: signed, detalle, quien: m.person });
     });
     return rows.sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 300);
   }, [restocks, withdrawals, movements, destById]);
@@ -652,7 +673,7 @@ export default function App() {
 
         {loading ? <div className="skeleton-wrap" aria-busy="true"><div className="skeleton sk-row" /><div className="skeleton sk-row" /><div className="skeleton sk-block" /></div> :
           tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} diffs={diffShipments} linesByShipment={linesByShipment} canResolve={isStaff} onResolve={openResolve} events={events} history={history} onGo={setTab} /> :
-          tab === 'stock' ? <StockTable items={filteredItems} inDepots={inDepots} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter}
+          tab === 'stock' ? <StockTable items={filteredItems} inDepots={inDepots} reserved={reserved} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter}
               onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', sku: item.sku || '' }); setModal({ type: 'item' }); }}
               onAdjust={(item) => setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reason: '', place: 'DEPOSITO MARKETING ROSARIO' })}
               onDelete={deleteItem} onPhotos={(item) => setModal({ type: 'photos', item })} /> :
@@ -661,6 +682,7 @@ export default function App() {
               sentList={shipments.filter(x => x.destination_id === selectedDest)} linesByShipment={linesByShipment} lastSent={lastSent} isDepot={Boolean(destById[selectedDest]?.is_depot)} isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={setSelectedDest}
               rows={destStock.filter(r => r.destination_id === selectedDest)} status={pointStatus.filter(p => p.destination_id === selectedDest)}
               itemById={itemById} inTransit={inTransit.filter(m => m.destination_id === selectedDest)} onGoReceive={() => setTab('recepcion')}
+              onReturn={(r) => setModal({ type: 'return', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, notes: '', place: destById[selectedDest]?.name })}
               onDeliver={(r) => setModal({ type: 'pwithdraw', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' })}
               onStockIn={() => setModal({ type: 'pstockin', destination_id: selectedDest, item_id: '', qty: 1, notes: '' })}
               onMin={(r) => setModal({ type: 'pmin', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, min: r.min_qty })}
@@ -678,10 +700,10 @@ export default function App() {
       {modal?.type === 'confirm' && <ConfirmModal modal={modal} onClose={() => setModal(null)} />}
       {modal?.type === 'photos' && <PhotoViewer item={modal.item} onClose={() => setModal(null)} />}
       {modal?.type === 'item' && <ItemModal form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setModal(null)} onSubmit={saveItem} />}
-      {modal?.type === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} onClose={() => setModal(null)} onSubmit={saveRestock} />}
-      {modal?.type === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} onClose={() => setModal(null)} onSubmit={saveWithdrawal} />}
-      {modal?.type === 'hub' && <MovementHub pending={inTransit} lines={linesByShipment} onClose={() => setModal(null)} onSend={() => setModal({ type: 'send', destination_id: '', recipient_name: '', notes: '', lines: [{ item_id: '', qty: 1 }] })} onReceive={openReception} />}
-      {modal?.type === 'send' && <SendModal modal={modal} setModal={setModal} items={items} destinations={destinations} onClose={() => setModal(null)} onSubmit={saveShipment} />}
+      {modal?.type === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveRestock} />}
+      {modal?.type === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveWithdrawal} />}
+      {modal?.type === 'hub' && <MovementHub pending={inTransit} lines={linesByShipment} onClose={() => setModal(null)} onSend={() => setModal({ type: 'send', origin_id: '', destination_id: '', recipient_name: '', notes: '', lines: [{ item_id: '', qty: 1 }] })} onReceive={openReception} />}
+      {modal?.type === 'send' && <SendModal modal={modal} setModal={setModal} items={items} destinations={destinations} destStock={destStock} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveShipment} />}
       {modal?.type === 'event' && <EventModal modal={modal} setModal={setModal} items={items} availableOf={availableOf} onClose={() => setModal(null)} onSubmit={saveEvent} />}
       {modal?.type === 'withdrawEvent' && <WithdrawEventModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveWithdrawEvent} />}
       {modal?.type === 'returnEvent' && <ReturnEventModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveReturnEvent} />}
@@ -689,6 +711,16 @@ export default function App() {
       {modal?.type === 'receive' && <ReceiveModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveReception} />}
       {modal?.type === 'resolve' && <ResolveModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveResolution} />}
       {modal?.type === 'pwithdraw' && <PointWithdrawModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={savePointWithdrawal} />}
+      {modal?.type === 'return' && (
+        <Modal title="Devolver a DEPOSITO MARKETING ROSARIO" onClose={() => setModal(null)} onSubmit={saveReturn} submitLabel="Registrar devolución">
+          <p><strong>{modal.name}</strong> · en {modal.place}: {modal.available}</p>
+          <div className="form-grid">
+            <label>Cantidad que vuelve *<input type="number" min="1" max={modal.available} required value={modal.qty} onChange={e => setModal(p => ({ ...p, qty: e.target.value }))} /></label>
+            <label>Nota (opcional)<input value={modal.notes} onChange={e => setModal(p => ({ ...p, notes: e.target.value }))} placeholder="Ej: sobrante de campaña" /></label>
+          </div>
+          <p className="muted small">Se descuenta de {modal.place} y se suma al stock de DEPOSITO MARKETING ROSARIO. Registralo cuando la mercadería ya llegó a Rosario.</p>
+        </Modal>
+      )}
       {modal?.type === 'pstockin' && <PointStockInModal modal={modal} setModal={setModal} items={items} onClose={() => setModal(null)} onSubmit={savePointStockIn} />}
       {modal?.type === 'pmin' && <PointMinModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveMin} />}
       {modal?.type === 'adjust' && <AdjustModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveAdjust} />}
@@ -812,7 +844,7 @@ function Stat({ label, value, tone, onClick }) {
   return <div className={`stat ${tone || ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}><strong><CountUp value={value} /></strong><span>{label}</span></div>;
 }
 
-function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete, onPhotos }) {
+function StockTable({ items: allItems, inDepots, reserved, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete, onPhotos }) {
   const PAGE = 25;
   const [page, setPage] = useState(0);
   const [showAll, setShowAll] = useState(false);
@@ -855,7 +887,7 @@ function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categ
                   </button>) : null}</td>
                 <td><strong>{i.name}</strong><small>{i.sku || 'Sin SKU'}</small></td>
                 <td>{i.category}</td><td>{i.brand}</td>
-                <td className={low ? 'warn' : ''}>{i.stock_nucleo || 0}{Number(i.reorder_nucleo) > 0 && <small>mín. {i.reorder_nucleo}</small>}</td>
+                <td className={low ? 'warn' : ''}>{i.stock_nucleo || 0}{reserved?.[i.id] > 0 && <small>reservado {reserved[i.id]} · disponible {Math.max(0, (i.stock_nucleo || 0) - reserved[i.id])}</small>}{Number(i.reorder_nucleo) > 0 && <small>mín. {i.reorder_nucleo}</small>}</td>
                 <td>{inDepots[i.id] || 0}</td>
                 {isStaff && <td className="actions-col">
                   <button className="link-btn" onClick={() => onEdit(i)}>Editar</button>
@@ -881,7 +913,7 @@ function StockTable({ items: allItems, inDepots, isStaff, query, setQuery, categ
   );
 }
 
-function DepositoView({ sentList, linesByShipment, lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onMin, onAdjust }) {
+function DepositoView({ sentList, linesByShipment, lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onReturn, onMin, onAdjust }) {
   const statusByItem = Object.fromEntries(status.map(s => [s.item_id, s]));
   const dest = destinations.find(d => d.id === selectedDest);
   return (
@@ -921,10 +953,10 @@ function DepositoView({ sentList, linesByShipment, lastSent, isDepot, isPunto, c
       <section className="card">
         <div className="card-head">
           <h2>{dest?.name || 'Depósito'}</h2>
-          {canOperate && isDepot && <button className="primary-btn" onClick={onStockIn}>+ Cargar stock</button>}
+          {canOperate && isDepot && !isPunto && <button className="primary-btn" onClick={onStockIn}>+ Cargar stock</button>}
         </div>
         {isDepot
-          ? <p className="muted small">El stock sube cuando confirmás la recepción de un envío o cuando cargás stock propio. Baja con cada entrega. El punto de restock sugerido se calcula con tus entregas de los últimos 90 días.</p>
+          ? <p className="muted small">El stock sube cuando se confirma la recepción de un envío. Baja con cada entrega, envío o devolución a Rosario. El punto de restock sugerido se calcula con tus entregas de los últimos 90 días.</p>
           : <p className="muted small">Concesionario: acá queda el registro de lo que se le envió, con fecha y cantidad. Lo que el concesionario va usando se descuenta a mano con «Ajustar», y la reposición se pide por mensaje (no genera alertas en la plataforma).</p>}
         <table>
           <thead>{isDepot
@@ -940,7 +972,7 @@ function DepositoView({ sentList, linesByShipment, lastSent, isDepot, isPunto, c
                   <td><strong>{itemById[r.item_id]?.name || 'Material'}</strong><small>{itemById[r.item_id]?.category}</small></td>
                   <td>{r.qty}</td>
                   <td>{ls ? `${ls.qty} el ${fmtDate(ls.created_at)}` : '—'}</td>
-                  {canOperate && <td className="actions-col"><button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button></td>}
+                  {canOperate && <td className="actions-col">{!isPunto && <button className="link-btn" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}<button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button></td>}
                 </tr>
               );
               return (
@@ -952,6 +984,7 @@ function DepositoView({ sentList, linesByShipment, lastSent, isDepot, isPunto, c
                   <td><span className={`chip ${st}`}>{st === 'ok' ? 'OK' : st === 'sin_stock' ? 'Sin stock' : 'Reponer'}</span></td>
                   {canOperate && <td className="actions-col">
                     <button className="link-btn" disabled={r.qty < 1} onClick={() => onDeliver(r)}>Entregar</button>
+                    {!isPunto && <button className="link-btn" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}
                     <button className="link-btn" onClick={() => onMin(r)}>Mínimo</button>
                     <button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button>
                   </td>}
@@ -1069,7 +1102,7 @@ function MovementTable({ rows, lines, canResolve, onResolve, destById }) {
         <thead><tr><th>Fecha</th><th>Destino</th><th>Materiales</th><th>Estado</th><th>Recibió</th><th>Enviado por</th></tr></thead>
         <tbody>{rows.map(sh => (
           <tr key={sh.id}>
-            <td>{fmtDate(sh.created_at)}</td><td>{sh.destination_name}</td>
+            <td>{fmtDate(sh.created_at)}</td><td>{sh.destination_name}{sh.origin_name && <small>desde {sh.origin_name}</small>}</td>
             <td><ShipmentLines lines={lines[sh.id] || []} />{sh.reception_notes && <small className="obs-text">“{sh.reception_notes}”</small>}</td>
             <td><span className={`chip ${chip[sh.status]}`}>{destById?.[sh.destination_id]?.is_depot === false ? 'Registrado' : label[sh.status]}</span>
               {sh.status === 'con_diferencia' && canResolve && <button className="link-btn" onClick={() => onResolve(sh)}>Resolver</button>}
@@ -1259,32 +1292,33 @@ function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
   );
 }
 
-function ItemSelect({ items, value, onChange, label = 'Material *' }) {
-  return <label>{label}<select required value={value} onChange={e => onChange(e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name} (Central: {i.stock_nucleo})</option>)}</select></label>;
+function ItemSelect({ items, value, onChange, reserved, label = 'Material *' }) {
+  return <label>{label}<select required value={value} onChange={e => onChange(e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name}{i.brand && i.brand !== 'Genérico' ? ` · ${i.brand}` : ''} (Rosario: {i.stock_nucleo}{reserved?.[i.id] > 0 ? ` · reservados ${reserved[i.id]}` : ''})</option>)}</select></label>;
 }
 
-function RestockModal({ restock, setRestock, items, onClose, onSubmit }) {
+function RestockModal({ restock, setRestock, items, reserved, onClose, onSubmit }) {
   const set = (k, v) => setRestock(p => ({ ...p, [k]: v }));
   return (
     <Modal title="Registrar ingreso" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar ingreso">
       <div className="form-grid">
-        <ItemSelect items={items} value={restock.item_id} onChange={v => set('item_id', v)} />
+        <ItemSelect items={items} value={restock.item_id} onChange={v => set('item_id', v)} reserved={reserved} />
         <label>Cantidad *<input type="number" min="1" required value={restock.qty} onChange={e => set('qty', e.target.value)} /></label>
-        <label>Origen<select value={restock.source} onChange={e => set('source', e.target.value)}><option value="proveedor">Proveedor</option><option value="devolucion">Devolución</option></select></label>
+        <label>Origen<select value={restock.source} onChange={e => set('source', e.target.value)}><option value="proveedor">Proveedor</option><option value="otro">Otro (aclarar en notas)</option></select></label>
         <label>Costo<input type="number" step="0.01" value={restock.cost} onChange={e => set('cost', e.target.value)} /></label>
         <label className="full-width">Notas<input value={restock.notes} onChange={e => set('notes', e.target.value)} placeholder="Remito, proveedor, etc." /></label>
       </div>
+      <p className="muted small">¿Es una devolución de un depósito o concesionario? No la cargues acá: usá «Devolver a Rosario» en Depósitos y puntos, así también se descuenta de donde vuelve.</p>
     </Modal>
   );
 }
 
-function WithdrawalModal({ withdrawal, setWithdrawal, items, onClose, onSubmit }) {
+function WithdrawalModal({ withdrawal, setWithdrawal, items, reserved, onClose, onSubmit }) {
   const set = (k, v) => setWithdrawal(p => ({ ...p, [k]: v }));
   const esIncidencia = withdrawal.reason_type === 'incidencia_cliente';
   return (
     <Modal title="Registrar retiro" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar retiro">
       <div className="form-grid">
-        <ItemSelect items={items} value={withdrawal.item_id} onChange={v => set('item_id', v)} />
+        <ItemSelect items={items} value={withdrawal.item_id} onChange={v => set('item_id', v)} reserved={reserved} />
         <label>Cantidad *<input type="number" min="1" required value={withdrawal.qty} onChange={e => set('qty', e.target.value)} /></label>
         <label>Motivo<select value={withdrawal.reason_type} onChange={e => set('reason_type', e.target.value)}>{REASONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         {esIncidencia && <>
@@ -1326,29 +1360,48 @@ function MovementHub({ pending, lines, onClose, onSend, onReceive }) {
   );
 }
 
-function SendModal({ modal, setModal, items, destinations, onClose, onSubmit }) {
+function SendModal({ modal, setModal, items, destinations, destStock, reserved, onClose, onSubmit }) {
   const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
   const setLine = (i, k, v) => setModal(p => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, [k]: v } : l)) }));
   const addLine = () => setModal(p => ({ ...p, lines: [...p.lines, { item_id: '', qty: 1 }] }));
   const delLine = (i) => setModal(p => ({ ...p, lines: p.lines.length > 1 ? p.lines.filter((_, j) => j !== i) : p.lines }));
+  const origins = destinations.filter(d => d.supplies_dealers);
+  const origin = origins.find(d => d.id === modal.origin_id);
+  const avail = (it) => Math.max(0, (it.stock_nucleo || 0) - (reserved?.[it.id] || 0));
+  const pool = (origin
+    ? destStock.filter(r => r.destination_id === origin.id && r.qty > 0).map(r => ({ it: items.find(x => x.id === r.item_id), max: r.qty }))
+    : items.map(it => ({ it, max: avail(it) })).filter(x => x.max > 0)
+  ).filter(x => x.it).sort((x, y) => x.it.name.localeCompare(y.it.name));
+  const destOptions = origin ? destinations.filter(d => !d.is_depot && d.id !== origin.id) : destinations;
   const used = new Set(modal.lines.map(l => l.item_id));
+  const chosenDest = destinations.find(d => d.id === modal.destination_id);
   return (
     <Modal title="Enviar materiales" onClose={onClose} onSubmit={onSubmit} submitLabel="Registrar envío">
       <div className="form-grid">
-        <label>Destino *<select required value={modal.destination_id} onChange={e => set('destination_id', e.target.value)}><option value="">Seleccionar</option>{destinations.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+        {origins.length > 0 && (
+          <label>Sale desde *
+            <select value={modal.origin_id} onChange={e => setModal(p => ({ ...p, origin_id: e.target.value, destination_id: '', lines: [{ item_id: '', qty: 1 }] }))}>
+              <option value="">DEPOSITO MARKETING ROSARIO</option>
+              {origins.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </label>
+        )}
+        <label>Destino *<select required value={modal.destination_id} onChange={e => set('destination_id', e.target.value)}><option value="">Seleccionar</option>{destOptions.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
         <label>Quién lo recibe<input value={modal.recipient_name} onChange={e => set('recipient_name', e.target.value)} placeholder="Nombre de quién recibe" /></label>
       </div>
       <h3 className="sub">Materiales del envío</h3>
       <div className="send-lines">
         {modal.lines.map((l, i) => {
-          const it = items.find(x => x.id === l.item_id);
+          const cur = pool.find(x => x.it.id === l.item_id);
           return (
             <div key={i} className="send-line">
               <select value={l.item_id} onChange={e => setLine(i, 'item_id', e.target.value)} required>
                 <option value="">Elegir material…</option>
-                {items.filter(x => x.id === l.item_id || !used.has(x.id)).map(x => <option key={x.id} value={x.id}>{x.name}{x.brand && x.brand !== 'Genérico' ? ` · ${x.brand}` : ''} (Central: {x.stock_nucleo})</option>)}
+                {pool.filter(x => x.it.id === l.item_id || !used.has(x.it.id)).map(({ it, max }) => (
+                  <option key={it.id} value={it.id}>{it.name}{it.brand && it.brand !== 'Genérico' ? ` · ${it.brand}` : ''} (Disponible: {max}{!origin && reserved?.[it.id] > 0 ? ` de ${it.stock_nucleo}, reservados ${reserved[it.id]}` : ''})</option>
+                ))}
               </select>
-              <input type="number" min="1" max={it?.stock_nucleo || undefined} value={l.qty} onChange={e => setLine(i, 'qty', e.target.value)} aria-label="Cantidad" required />
+              <input type="number" min="1" max={cur?.max || undefined} value={l.qty} onChange={e => setLine(i, 'qty', e.target.value)} aria-label="Cantidad" required />
               <button type="button" className="link-btn danger" onClick={() => delLine(i)} disabled={modal.lines.length === 1}>Quitar</button>
             </div>
           );
@@ -1356,9 +1409,9 @@ function SendModal({ modal, setModal, items, destinations, onClose, onSubmit }) 
       </div>
       <button type="button" className="secondary-btn add-line-btn" onClick={addLine}>+ Agregar otro material</button>
       <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
-      {destinations.find(d => d.id === modal.destination_id)?.is_depot === false
-        ? <p className="muted small">Concesionario: se descuenta del DEPOSITO MARKETING ROSARIO y queda registrado con la fecha de hoy y las cantidades. Es solo un registro: no necesita recepción.</p>
-        : <p className="muted small">Se descuenta del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Cuando llegue, quien recibe controla cada material (✓ o ✗) y las cantidades se suman a su stock.</p>}
+      {chosenDest?.is_depot === false
+        ? <p className="muted small">Concesionario: se descuenta de {origin ? origin.name : 'DEPOSITO MARKETING ROSARIO'} y queda registrado con la fecha de hoy y las cantidades. Es solo un registro: no necesita recepción.</p>
+        : <p className="muted small">Se descuenta del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Cuando llegue, quien recibe controla cada material (✓ o ✗) y las cantidades se suman a su stock. Lo reservado para eventos no se puede enviar.</p>}
     </Modal>
   );
 }
@@ -1622,9 +1675,9 @@ function PointStockInModal({ modal, setModal, items, onClose, onSubmit }) {
       <div className="form-grid">
         <label>Material *<select required value={modal.item_id} onChange={e => set('item_id', e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
         <label>Cantidad *<input type="number" min="1" required value={modal.qty} onChange={e => set('qty', e.target.value)} /></label>
-        <label className="full-width">Motivo / notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Ej: stock inicial, sobrante de evento" /></label>
+        <label className="full-width">Motivo *<input required value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Ej: stock inicial contado, compra propia del depósito" /></label>
       </div>
-      <p className="muted small">Para mercadería que te manda Rosario usá «Por recibir». Esta carga es para stock que ya tenías o que llegó por otra vía.</p>
+      <p className="warn small">NO uses esto para mercadería que mandó Rosario: eso se recibe desde «En camino» y, si la cargás acá además, queda contada dos veces. Solo para stock que ya estaba o que llegó por otra vía.</p>
     </Modal>
   );
 }
