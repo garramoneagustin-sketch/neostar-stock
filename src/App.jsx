@@ -141,6 +141,8 @@ const emptyItem = {
 };
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('es-AR') : '—');
+const fmtMoney = (n) => `$ ${Number(n).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+const reasonLabel = (v) => (REASONS.find(r => r[0] === v) || [v, v])[1];
 const fmtDateTime = (d) => (d ? new Date(d).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' }) : '—');
 const daysSince = (d) => Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
 
@@ -255,7 +257,11 @@ export default function App() {
       ch = ch.on('postgres_changes', { event: '*', schema: 'public', table }, reload);
     });
     ch.subscribe();
-    return () => { clearTimeout(t); supabase.removeChannel(ch); };
+    const onVis = () => { if (document.visibilityState === 'visible') reload(); };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', reload);
+    const poll = setInterval(() => { if (document.visibilityState === 'visible') loadData(true); }, 60000);
+    return () => { clearTimeout(t); clearInterval(poll); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', reload); supabase.removeChannel(ch); };
   }, [session?.user?.id, profile?.id, profile?.role, loadData]);
 
   // Depósito seleccionado por defecto
@@ -582,8 +588,8 @@ export default function App() {
 
   const history = useMemo(() => {
     const rows = [];
-    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a DEPOSITO MARKETING ROSARIO', item: r.items?.name, qty: r.qty, detalle: [r.source, r.cost ? `$${r.cost}` : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
-    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: 'Retiro de DEPOSITO MARKETING ROSARIO', item: w.items?.name, qty: w.qty, detalle: [w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
+    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a DEPOSITO MARKETING ROSARIO', item: r.items?.name, qty: r.qty, detalle: [r.source, r.cost ? fmtMoney(r.cost) : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
+    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: 'Retiro de DEPOSITO MARKETING ROSARIO', item: w.items?.name, qty: w.qty, detalle: [reasonLabel(w.reason_type), w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
     movements.forEach(m => {
       if (m.type === 'stock_inicial' || m.type === 'compra') {
         rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type], item: m.items?.name, qty: m.qty, detalle: m.notes || '', quien: m.person });
@@ -1079,7 +1085,7 @@ function RestockTable({ rows }) {
       <h2>Ingresos de stock</h2>
       <table>
         <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Origen</th><th>Costo</th><th>Registrado por</th></tr></thead>
-        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.source}</td><td>{r.cost ? `$${r.cost}` : '—'}</td><td>{r.person}</td></tr>)}</tbody>
+        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.source}</td><td>{r.cost ? fmtMoney(r.cost) : '—'}</td><td>{r.person}</td></tr>)}</tbody>
       </table>
     </section>
   );
@@ -1090,8 +1096,8 @@ function WithdrawalTable({ rows }) {
     <section className="card">
       <h2>Retiros / Uso (DEPOSITO MARKETING ROSARIO)</h2>
       <table>
-        <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Motivo</th><th>Cliente</th><th>Patente</th><th>Registrado por</th></tr></thead>
-        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.reason_detail}</td><td>{r.recipient_last_name || '—'}</td><td>{r.vehicle_plate || '—'}</td><td>{r.person}</td></tr>)}</tbody>
+        <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Motivo</th><th>Detalle</th><th>Cliente</th><th>Patente</th><th>Registrado por</th></tr></thead>
+        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{reasonLabel(r.reason_type)}</td><td>{r.reason_detail}</td><td>{r.recipient_last_name || '—'}</td><td>{r.vehicle_plate || '—'}</td><td>{r.person}</td></tr>)}</tbody>
       </table>
     </section>
   );
@@ -1322,7 +1328,10 @@ function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
 }
 
 function ItemSelect({ items, value, onChange, reserved, label = 'Material *' }) {
-  return <label>{label}<select required value={value} onChange={e => onChange(e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name}{i.brand && i.brand !== 'Genérico' ? ` · ${i.brand}` : ''} (Rosario: {i.stock_nucleo}{reserved?.[i.id] > 0 ? ` · reservados ${reserved[i.id]}` : ''})</option>)}</select></label>;
+  const [f, setF] = useState('');
+  const t = f.trim().toLowerCase();
+  const shown = items.filter(i => i.id === value || !t || `${i.name} ${i.brand || ''} ${i.sku || ''}`.toLowerCase().includes(t));
+  return <label>{label}<input className="select-filter" value={f} onChange={e => setF(e.target.value)} placeholder="Escribí para filtrar la lista…" /><select required value={value} onChange={e => onChange(e.target.value)}><option value="">{t && shown.length === 0 ? 'Sin resultados' : 'Seleccionar'}</option>{shown.map(i => <option key={i.id} value={i.id}>{i.name}{i.brand && i.brand !== 'Genérico' ? ` · ${i.brand}` : ''} (Rosario: {i.stock_nucleo}{reserved?.[i.id] > 0 ? ` · reservados ${reserved[i.id]}` : ''})</option>)}</select></label>;
 }
 
 function RestockModal({ restock, setRestock, items, reserved, onClose, onSubmit }) {
@@ -1333,7 +1342,7 @@ function RestockModal({ restock, setRestock, items, reserved, onClose, onSubmit 
         <ItemSelect items={items} value={restock.item_id} onChange={v => set('item_id', v)} reserved={reserved} />
         <label>Cantidad *<input type="number" min="1" required value={restock.qty} onChange={e => set('qty', e.target.value)} /></label>
         <label>Origen<select value={restock.source} onChange={e => set('source', e.target.value)}><option value="proveedor">Proveedor</option><option value="otro">Otro (aclarar en notas)</option></select></label>
-        <label>Costo<input type="number" step="0.01" value={restock.cost} onChange={e => set('cost', e.target.value)} /></label>
+        <label>Costo total en pesos (opcional)<input type="number" min="0" step="0.01" placeholder="Lo que costó toda la compra" value={restock.cost} onChange={e => set('cost', e.target.value)} /></label>
         <label className="full-width">Notas<input value={restock.notes} onChange={e => set('notes', e.target.value)} placeholder="Remito, proveedor, etc." /></label>
       </div>
       <p className="muted small">¿Es una devolución de un depósito o concesionario? No la cargues acá: usá «Devolver a Rosario» en Depósitos y puntos, así también se descuenta de donde vuelve.</p>
@@ -1374,6 +1383,8 @@ function SendModal({ modal, setModal, items, destinations, destStock, reserved, 
   ).filter(x => x.it).sort((x, y) => x.it.name.localeCompare(y.it.name));
   const destOptions = origin ? destinations.filter(d => !d.is_depot && d.id !== origin.id) : destinations;
   const used = new Set(modal.lines.map(l => l.item_id));
+  const [mf, setMf] = useState('');
+  const mt = mf.trim().toLowerCase();
   const chosenDest = destinations.find(d => d.id === modal.destination_id);
   return (
     <Modal title="Enviar materiales" onClose={onClose} onSubmit={onSubmit} submitLabel="Registrar envío">
@@ -1390,6 +1401,7 @@ function SendModal({ modal, setModal, items, destinations, destStock, reserved, 
         <label>Quién lo recibe<input value={modal.recipient_name} onChange={e => set('recipient_name', e.target.value)} placeholder="Nombre de quién recibe" /></label>
       </div>
       <h3 className="sub">Materiales del envío</h3>
+      <input className="select-filter" value={mf} onChange={e => setMf(e.target.value)} placeholder="Escribí para filtrar los materiales de la lista…" />
       <div className="send-lines">
         {modal.lines.map((l, i) => {
           const cur = pool.find(x => x.it.id === l.item_id);
@@ -1397,7 +1409,7 @@ function SendModal({ modal, setModal, items, destinations, destStock, reserved, 
             <div key={i} className="send-line">
               <select value={l.item_id} onChange={e => setLine(i, 'item_id', e.target.value)} required>
                 <option value="">Elegir material…</option>
-                {pool.filter(x => x.it.id === l.item_id || !used.has(x.it.id)).map(({ it, max }) => (
+                {pool.filter(x => x.it.id === l.item_id || (!used.has(x.it.id) && (!mt || `${x.it.name} ${x.it.brand || ''} ${x.it.sku || ''}`.toLowerCase().includes(mt)))).map(({ it, max }) => (
                   <option key={it.id} value={it.id}>{it.name}{it.brand && it.brand !== 'Genérico' ? ` · ${it.brand}` : ''} (Disponible: {max}{!origin && reserved?.[it.id] > 0 ? ` de ${it.stock_nucleo}, reservados ${reserved[it.id]}` : ''})</option>
                 ))}
               </select>

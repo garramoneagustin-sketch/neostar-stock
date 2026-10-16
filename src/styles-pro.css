@@ -255,3 +255,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
 
 /* Etapa 3: Eliminar separado de las acciones habituales */
 .actions-col .link-btn.danger { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e3e8ee; width: 100%; }
+.select-filter { margin-bottom: 6px; font-size: 14px; }
+.select-filter { margin-bottom: 6px; font-size: 14px; }
+.select-filter { margin-bottom: 6px; font-size: 14px; }
