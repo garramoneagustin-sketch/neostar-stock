@@ -182,6 +182,12 @@ export default function App() {
   const [brandFilter, setBrandFilter] = useState('Todas');
   const [selectedDest, setSelectedDest] = useState('');
   const [modal, setModal] = useState(null); // { type, ...datos }
+  useEffect(() => {
+    if (!modal) return undefined;
+    const onKey = e => { if (e.key === 'Escape') setModal(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [modal]);
   const [form, setForm] = useState(emptyItem);
   const [editingItem, setEditingItem] = useState(null);
   const [restock, setRestock] = useState({ item_id: '', qty: 1, source: 'proveedor', cost: '', notes: '' });
@@ -595,7 +601,7 @@ export default function App() {
       const signed = m.type === 'ajuste' && m.qty_after != null ? `${m.qty_after - m.qty_before > 0 ? '+' : '−'}${m.qty}` : m.qty;
       rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type] || m.type, item: m.items?.name, qty: signed, detalle, quien: m.person });
     });
-    return rows.sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 300);
+    return rows.sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 1000);
   }, [restocks, withdrawals, movements, destById]);
 
   // ---------- Render ----------
@@ -609,10 +615,10 @@ export default function App() {
     : [
         ['dashboard', 'Dashboard'], ['stock', 'Materiales'], ['depositos', 'Depósitos y puntos'],
         ['recepcion', 'En camino', inTransit.length + diffShipments.length, diffShipments.length > 0],
-        ['ingresos', 'Ingresos'], ['retiros', 'Retiros'], ['movimientos', 'Movimientos'], ['eventos', 'Eventos'], ['historial', 'Historial']
+        ['ingresos', 'Ingresos'], ['retiros', 'Retiros'], ['movimientos', 'Envíos'], ['eventos', 'Eventos'], ['historial', 'Historial']
       ];
 
-  const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: isPunto ? 'Por recibir' : 'Envíos en camino', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Movimientos', eventos: 'Eventos', historial: 'Historial' };
+  const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: isPunto ? 'Por recibir' : 'Envíos en camino', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Envíos', eventos: 'Eventos', historial: 'Historial' };
   const helps = {
     dashboard: 'Resumen de lo que necesita atención hoy: alertas de stock, envíos en camino, eventos y diferencias de recepción.',
     stock: 'Catálogo de materiales con su stock en el DEPOSITO MARKETING ROSARIO. Buscá o elegí una categoría para ver la lista. Con «Ajustar stock» corregís cantidades dejando motivo.',
@@ -621,7 +627,7 @@ export default function App() {
     recepcion: isPunto ? 'Envíos que salieron hacia tu depósito. Tocá Recibir y marcá ✓ si llegó todo bien o ✗ si hay una diferencia (elegís el motivo y la cantidad). Lo que llegó bien se suma a tu stock al instante.' : 'Envíos que salieron del DEPOSITO MARKETING ROSARIO y todavía no fueron recibidos. Si el destino reporta una diferencia, queda en rojo hasta que la resuelvas.',
     ingresos: 'Mercadería que entra al DEPOSITO MARKETING ROSARIO (compras o devoluciones). Suma al stock.',
     retiros: 'Salidas del DEPOSITO MARKETING ROSARIO por regalos, usos internos o incidencias. Descuenta del stock.',
-    movimientos: 'Todos los envíos desde Rosario. «Nuevo movimiento» sirve para enviar o para recibir.',
+    movimientos: 'Todos los envíos que salieron del DEPOSITO MARKETING ROSARIO. Para mandar materiales usá «Nuevo envío»; la recepción se controla en «Envíos en camino».',
     eventos: 'Cada evento reserva materiales para sus fechas. El stock recién sale al tocar «Entregar materiales» y vuelve al registrar el regreso.',
     historial: 'Registro de todo lo que entró, salió o se movió, con fecha y responsable.'
   };
@@ -663,7 +669,7 @@ export default function App() {
             {isStaff && tab === 'stock' && <button className="primary-btn" onClick={() => { setEditingItem(null); setForm(emptyItem); setModal({ type: 'item' }); }}>+ Nuevo material</button>}
             {isStaff && tab === 'ingresos' && <button className="primary-btn" onClick={() => setModal({ type: 'restock' })}>+ Registrar ingreso</button>}
             {isStaff && tab === 'retiros' && <button className="primary-btn" onClick={() => setModal({ type: 'withdrawal' })}>+ Registrar retiro</button>}
-            {isStaff && tab === 'movimientos' && <button className="primary-btn" onClick={() => setModal({ type: 'hub' })}>+ Nuevo movimiento</button>}
+            {isStaff && tab === 'movimientos' && <button className="primary-btn" onClick={() => setModal({ type: 'send', origin_id: '', destination_id: '', recipient_name: '', notes: '', lines: [{ item_id: '', qty: 1 }] })}>+ Nuevo envío</button>}
             {isStaff && tab === 'eventos' && <button className="primary-btn" onClick={() => { setError(''); setNotice(''); setModal(emptyEvent()); }}>+ Nuevo evento</button>}
           </div>
         </header>
@@ -702,7 +708,6 @@ export default function App() {
       {modal?.type === 'item' && <ItemModal form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setModal(null)} onSubmit={saveItem} />}
       {modal?.type === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveRestock} />}
       {modal?.type === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveWithdrawal} />}
-      {modal?.type === 'hub' && <MovementHub pending={inTransit} lines={linesByShipment} onClose={() => setModal(null)} onSend={() => setModal({ type: 'send', origin_id: '', destination_id: '', recipient_name: '', notes: '', lines: [{ item_id: '', qty: 1 }] })} onReceive={openReception} />}
       {modal?.type === 'send' && <SendModal modal={modal} setModal={setModal} items={items} destinations={destinations} destStock={destStock} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveShipment} />}
       {modal?.type === 'event' && <EventModal modal={modal} setModal={setModal} items={items} availableOf={availableOf} onClose={() => setModal(null)} onSubmit={saveEvent} />}
       {modal?.type === 'withdrawEvent' && <WithdrawEventModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveWithdrawEvent} />}
@@ -1189,14 +1194,38 @@ function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, on
 }
 
 function HistoryTab({ rows }) {
+  const PAGE = 50;
+  const [q, setQ] = useState('');
+  const [tipo, setTipo] = useState('Todos');
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [q, tipo]);
+  const tipos = useMemo(() => Array.from(new Set(rows.map(r => r.tipo).filter(Boolean))).sort(), [rows]);
+  const filtered = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return rows.filter(r => (tipo === 'Todos' || r.tipo === tipo) && (!t || [r.item, r.detalle, r.quien, r.tipo].some(x => String(x || '').toLowerCase().includes(t))));
+  }, [rows, q, tipo]);
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE));
+  const cur = Math.min(page, pages - 1);
+  const visible = filtered.slice(cur * PAGE, cur * PAGE + PAGE);
   return (
     <section className="card">
       <h2>Historial completo</h2>
+      <div className="filters-row">
+        <label className="filter-label">Buscar<input value={q} onChange={e => setQ(e.target.value)} placeholder="Material, detalle o usuario…" /></label>
+        <label className="filter-label">Tipo<select value={tipo} onChange={e => setTipo(e.target.value)}><option>Todos</option>{tipos.map(t => <option key={t}>{t}</option>)}</select></label>
+      </div>
       <table>
         <thead><tr><th>Fecha</th><th>Tipo</th><th>Material</th><th>Cantidad</th><th>Detalle</th><th>Usuario</th></tr></thead>
-        <tbody>{rows.map(op => <tr key={op.id}><td>{fmtDateTime(op.at)}</td><td>{op.tipo}</td><td>{op.item}</td><td>{op.qty}</td><td>{op.detalle || '—'}</td><td>{op.quien}</td></tr>)}
-          {!rows.length && <tr><td colSpan="6" className="muted">Sin movimientos</td></tr>}</tbody>
+        <tbody>{visible.map(op => <tr key={op.id}><td>{fmtDateTime(op.at)}</td><td>{op.tipo}</td><td>{op.item}</td><td>{op.qty}</td><td>{op.detalle || '—'}</td><td>{op.quien}</td></tr>)}
+          {!visible.length && <tr><td colSpan="6" className="muted">Sin movimientos</td></tr>}</tbody>
       </table>
+      {pages > 1 && (
+        <div className="pager">
+          <button type="button" className="secondary-btn" disabled={cur === 0} onClick={() => setPage(cur - 1)}>← Anterior</button>
+          <span className="muted">Página {cur + 1} de {pages} · {filtered.length} registros</span>
+          <button type="button" className="secondary-btn" disabled={cur >= pages - 1} onClick={() => setPage(cur + 1)}>Siguiente →</button>
+        </div>
+      )}
     </section>
   );
 }
@@ -1328,35 +1357,6 @@ function WithdrawalModal({ withdrawal, setWithdrawal, items, reserved, onClose, 
         <label className="full-width">Descripción *<input required value={withdrawal.reason_detail} onChange={e => set('reason_detail', e.target.value)} placeholder={esIncidencia ? 'Motivo de la incidencia' : 'Descripción del retiro'} /></label>
       </div>
     </Modal>
-  );
-}
-
-function MovementHub({ pending, lines, onClose, onSend, onReceive }) {
-  const [view, setView] = useState('menu');
-  return (
-    <div className="modal-overlay">
-      <div className="modal">
-        <div className="card-head"><h2>{view === 'menu' ? 'Nuevo movimiento' : 'Recibir un envío'}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
-        {view === 'menu' ? (
-          <div className="hub-choices">
-            <button type="button" className="hub-btn" onClick={onSend}><strong>Enviar</strong><span>Armá la lista de materiales y mandala a un depósito (Santa Fe, Cañada) o registrá lo que se le entregó a un concesionario.</span></button>
-            <button type="button" className="hub-btn" onClick={() => setView('recibir')}><strong>Recibir{pending.length ? ` (${pending.length})` : ''}</strong><span>Controlá lo que llegó: ✓ si está bien, ✗ si falta algo.</span></button>
-          </div>
-        ) : (
-          <>
-            {!pending.length && <p className="muted">No hay envíos esperando recepción.</p>}
-            {pending.map(sh => (
-              <div key={sh.id} className="review-item">
-                <div className="review-head"><strong>{sh.destination_name}</strong><small>enviado {fmtDate(sh.created_at)} por {sh.created_by_name}</small></div>
-                <ShipmentLines lines={lines[sh.id] || []} />
-                <button type="button" className="primary-btn small-btn" onClick={() => onReceive(sh)}>Recibir</button>
-              </div>
-            ))}
-            <div className="modal-actions"><button type="button" className="secondary-btn" onClick={() => setView('menu')}>Volver</button></div>
-          </>
-        )}
-      </div>
-    </div>
   );
 }
 

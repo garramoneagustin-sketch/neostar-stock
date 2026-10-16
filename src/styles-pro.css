@@ -252,3 +252,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
 .brand-row .brand { min-width: 0; gap: 10px; padding: 4px 0 22px 4px; font-size: 21px; }
 .nav-rail .brand-row .brand { padding: 0 0 4px; }
 .diff-card { margin-bottom: 22px; }
+
+/* Etapa 3: Eliminar separado de las acciones habituales */
+.actions-col .link-btn.danger { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e3e8ee; width: 100%; }
