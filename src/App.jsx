@@ -1,27 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from './lib/supabase';
+import { UiCtx, Modal, MaterialPicker, useScrollLock, norm, compressImage, downloadCsv } from './ui';
 import './styles.css';
 import './styles-extra.css';
 import './styles-pro.css';
-
-const CATEGORIES = [
-  'Alfombras',
-  'Carpetas',
-  'Llaveros',
-  'Merchandising institucional',
-  'Portadocumentos',
-  'Portapatentes',
-  'Stickers y Calcomanías',
-  'Accesorios de armado',
-  'Carpas y Gazebos',
-  'Cartelería y estructuras',
-  'Flagbanners',
-  'Mesas',
-  'Roll Banners',
-  'Sillas',
-  'Sombrillas',
-  'Otros'
-];
+import './styles-ronda2.css';
 
 const driveId = (u) => (String(u).match(/\/d\/([\w-]+)/) || [])[1];
 const photoThumb = (u, w = 160) => (driveId(u) ? `https://drive.google.com/thumbnail?id=${driveId(u)}&sz=w${w}` : u);
@@ -66,7 +49,8 @@ const NAV_ICONS = {
   retiros: 'M12 15V3M7 8l5-5 5 5M4 20h16',
   movimientos: 'M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4',
   eventos: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
-  historial: 'M12 7v5l3 2M3 12a9 9 0 1 0 3-6.7M3 4v4h4'
+  historial: 'M12 7v5l3 2M3 12a9 9 0 1 0 3-6.7M3 4v4h4',
+  usuarios: 'M16 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM4 21c0-4 4-6 8-6s8 2 8 6'
 };
 // Número que sube hasta su valor (una sola vez, liviano)
 function CountUp({ value }) {
@@ -95,19 +79,23 @@ const REASONS = [
   ['otro', 'Otro']
 ];
 
+const ROSARIO = 'DEPOSITO MARKETING ROSARIO';
+// Ningún tipo crudo se muestra: lo desconocido aparece como «Otro movimiento»
 const MOVE_LABELS = {
-  envio_destino: 'Envío a depósito',
-  entrega: 'Entrega',
-  ingreso_punto: 'Carga en depósito',
-  ajuste: 'Ajuste de stock',
   stock_inicial: 'Stock inicial',
-  compra: 'Compra',
-  resolucion_diferencia: 'Resolución de diferencia',
-  devolucion: 'Devolución a DEPOSITO MARKETING ROSARIO',
+  envio_destino: 'Envío',
+  ingreso_punto: 'Carga en depósito',
+  entrega: 'Entrega en depósito',
+  devolucion: 'Devolución a Rosario',
+  ajuste: 'Ajuste de stock',
   salida_evento: 'Salida a evento',
   retorno_evento: 'Regreso de evento',
-  consumo_evento: 'Consumido en evento (no volvió)'
+  consumo_evento: 'Consumido en evento',
+  resolucion_diferencia: 'Resolución de diferencia',
+  retiro: `Retiro de ${ROSARIO}`,
+  compra: 'Compra'
 };
+const SOURCE_LABELS = { proveedor: 'Proveedor', otro: 'Otro', devolucion: 'Devolución', ajuste: 'Ajuste' };
 
 const DIFF_REASONS = [
   ['faltante', 'Faltante (llegó menos)'],
@@ -116,14 +104,15 @@ const DIFF_REASONS = [
   ['de_mas', 'Llegó de más']
 ];
 const DIFF_LABEL = Object.fromEntries(DIFF_REASONS);
-const RES_OPTIONS = [
+// Las opciones usan el nombre del origen real del envío (Rosario o un depósito)
+const resOptions = (org) => [
   ['proximo_envio', 'Va en el próximo envío (sigue en camino)'],
-  ['no_salio', 'Nunca salió de Rosario (error de carga: vuelve a Rosario)'],
+  ['no_salio', `Nunca salió de ${org} (error de carga: vuelve a ${org})`],
   ['perdida', 'Se perdió / se rompió (baja definitiva)'],
   ['error_conteo', 'Error de conteo en destino (se suma al destino)']
 ];
-const RES_SOBRANTE = [['sobrante', 'Sobrante: se descuenta de Rosario y se suma al destino']];
-const RES_LABEL = { proximo_envio: 'Va en el próximo envío', no_salio: 'Nunca salió de Rosario (vuelve a Rosario)', perdida: 'Pérdida / rotura', error_conteo: 'Error de conteo en destino', sobrante: 'Sobrante sumado al destino' };
+const resSobrante = (org) => [['sobrante', `Sobrante: se descuenta de ${org} y se suma al destino`]];
+const RES_LABEL = { proximo_envio: 'Va en el próximo envío', no_salio: 'Nunca salió (volvió al stock de origen)', perdida: 'Pérdida / rotura', error_conteo: 'Error de conteo en destino', sobrante: 'Sobrante sumado al destino' };
 
 const STATE_LABELS = {
   en_transito: 'En camino',
@@ -136,9 +125,13 @@ const STATE_LABELS = {
 };
 
 const emptyItem = {
-  name: '', sku: '', kind: 'consumible', category: 'Otros', brand: 'Genérico',
+  name: '', sku: '', kind: 'consumible', category: '', brand: 'Genérico',
   occasion: '', stock_nucleo: 0, reorder_nucleo: 0, lead_time_days: 15, photoFiles: []
 };
+const ROLE_LABELS = { admin: 'Administrador', editor: 'Editor', punto: 'Depósito', viewer: 'Solo lectura', none: 'Sin acceso' };
+const addDays = (s, n) => { const d = new Date(`${s}T12:00:00`); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const byName = (a, b) => a.name.localeCompare(b.name);
+const isStorageUrl = (u) => /\/storage\/v1\/object\/public\/item-photos\//.test(String(u));
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('es-AR') : '—');
 const fmtMoney = (n) => `$ ${Number(n).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
@@ -174,14 +167,22 @@ export default function App() {
   const [withdrawals, setWithdrawals] = useState([]);
   const [movements, setMovements] = useState([]);
   const [shipments, setShipments] = useState([]);
+  const [shipLines, setShipLines] = useState([]); // renglones de TODOS los envíos cargados (no dependen del límite de movimientos)
+  const [categories, setCategories] = useState([]);
+  const [reviewAdj, setReviewAdj] = useState([]); // ajustes de depósitos pendientes de revisión
+  const [users, setUsers] = useState([]);
   const [events, setEvents] = useState([]);
   const [eventItems, setEventItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [recovery, setRecovery] = useState(false); // llegó desde el link de «Olvidé mi contraseña»
+  const [authMsg, setAuthMsg] = useState('');
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('Todas');
   const [brandFilter, setBrandFilter] = useState('Todas');
+  const [photoFilter, setPhotoFilter] = useState(false);
   const [selectedDest, setSelectedDest] = useState('');
   const [modal, setModal] = useState(null); // { type, ...datos }
   useEffect(() => {
@@ -190,18 +191,36 @@ export default function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [modal]);
+  // Al abrir o cerrar una ventana se limpia el error anterior
+  useEffect(() => { setError(''); }, [modal?.type]);
   const [form, setForm] = useState(emptyItem);
   const [editingItem, setEditingItem] = useState(null);
   const [restock, setRestock] = useState({ item_id: '', qty: 1, source: 'proveedor', cost: '', notes: '' });
-  const [withdrawal, setWithdrawal] = useState({ item_id: '', qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' });
-  
+  const emptyWithdrawal = () => ({ lines: [{ item_id: '', qty: 1 }], reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' });
+  const [withdrawal, setWithdrawal] = useState(emptyWithdrawal);
+
   const role = profile?.role || 'none';
   const isStaff = role === 'admin' || role === 'editor';
   const isPunto = role === 'punto';
+  const isOwner = Boolean(profile?.is_owner);
 
   useEffect(() => {
+    // Si el link de recuperación venció, Supabase lo informa en la dirección (#error_code=otp_expired)
+    try {
+      const h = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const code = h.get('error_code');
+      if (code) {
+        setAuthMsg(code === 'otp_expired'
+          ? 'El enlace venció o ya se usó. Pedí uno nuevo con «Olvidé mi contraseña». (A veces el programa de correo abre el enlace antes que vos y lo gasta.)'
+          : (h.get('error_description') || 'No se pudo validar el enlace.').replace(/\+/g, ' '));
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    } catch { /* sin acceso a la dirección */ }
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => setSession(prev => ((prev?.user?.id || null) === (next?.user?.id || null) ? prev : next)));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
+      if (event === 'PASSWORD_RECOVERY') setRecovery(true);
+      setSession(prev => ((prev?.user?.id || null) === (next?.user?.id || null) ? prev : next));
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -210,8 +229,9 @@ export default function App() {
     if (!session) { setProfile(undefined); return; }
     supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle()
       .then(({ data }) => {
-        setProfile(prev => (prev && data && prev.id === data.id && prev.role === data.role && prev.destination_id === data.destination_id ? prev : (data || null)));
+        setProfile(prev => (prev && data && prev.id === data.id && prev.role === data.role && prev.destination_id === data.destination_id && prev.is_owner === data.is_owner ? prev : (data || null)));
         if (data?.role === 'punto') setTab('mideposito');
+        else if (data?.destination_id) setTab('depositos'); // quien tiene un depósito asignado (ej. Santiago en Santa Fe) abre directo en él
       });
   }, [session?.user?.id]);
 
@@ -223,25 +243,33 @@ export default function App() {
       if (e) errs.push(e.message);
       return data || [];
     };
-    const [it, ds, dst, ps, mv] = await Promise.all([
+    const [it, ds, dst, ps, mv, cats] = await Promise.all([
       q(supabase.from('items').select('*').eq('active', true).order('name')),
       q(supabase.from('destinations').select('*').order('name')),
       q(supabase.from('destination_stock').select('*')),
       q(supabase.from('point_restock_status').select('*')),
-      q(supabase.from('movements').select('*, items(name)').order('created_at', { ascending: false }).limit(600))
+      q(supabase.from('movements').select('*, items(name, brand)').order('created_at', { ascending: false }).limit(600)),
+      q(supabase.from('categories').select('*').eq('active', true).order('sort').order('name'))
     ]);
     const sh = await q(supabase.from('shipments').select('*').order('created_at', { ascending: false }).limit(300));
-    setItems(it); setDestinations(ds); setDestStock(dst); setPointStatus(ps); setMovements(mv); setShipments(sh);
+    // Los materiales de cada envío se piden por envío: así no se pierden cuando el movimiento sale de los últimos 600
+    const ids = sh.map(x => x.id);
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += 60) chunks.push(ids.slice(i, i + 60));
+    const lines = (await Promise.all(chunks.map(c => q(supabase.from('movements').select('*, items(name, brand)').in('shipment_id', c).eq('type', 'envio_destino'))))).flat();
+    setItems(it); setDestinations(ds); setDestStock(dst); setPointStatus(ps); setMovements(mv); setShipments(sh); setCategories(cats); setShipLines(lines);
 
     if (profile?.role !== 'punto') {
-      const [rs, wd, ev, evi, rsv] = await Promise.all([
+      const [rs, wd, ev, evi, rsv, rev, us] = await Promise.all([
         q(supabase.from('restocks').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('withdrawals').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('events').select('*').order('event_date', { ascending: false })),
         q(supabase.from('event_items').select('*, items(name), events(event_name)').order('created_at', { ascending: false })),
-        q(supabase.rpc('reserved_by_item'))
+        q(supabase.rpc('reserved_by_item')),
+        q(supabase.from('movements').select('*, items(name)').eq('needs_review', true).order('created_at', { ascending: false })),
+        profile?.role === 'admin' ? q(supabase.from('profiles').select('*').order('full_name')) : Promise.resolve([])
       ]);
-      setRestocks(rs); setWithdrawals(wd); setEvents(ev); setEventItems(evi);
+      setRestocks(rs); setWithdrawals(wd); setEvents(ev); setEventItems(evi); setReviewAdj(rev); setUsers(us);
       setReserved(Object.fromEntries((rsv || []).map(r => [r.item_id, r.reserved])));
     }
     setError(errs[0] || '');
@@ -264,38 +292,78 @@ export default function App() {
     return () => { clearTimeout(t); clearInterval(poll); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', reload); supabase.removeChannel(ch); };
   }, [session?.user?.id, profile?.id, profile?.role, loadData]);
 
-  // Depósito seleccionado por defecto
+  // Depósito seleccionado por defecto: el asignado al usuario; si no, el último que miró; si no, DEPOSITO MARKETING SANTA FE
   useEffect(() => {
     if (!destinations.length) return;
-    if (isPunto) setSelectedDest(profile.destination_id || '');
-    else if (!selectedDest) setSelectedDest(destinations[0].id);
+    if (isPunto) { setSelectedDest(profile.destination_id || ''); return; }
+    if (selectedDest && destinations.some(d => d.id === selectedDest)) return;
+    let last = null;
+    try { last = localStorage.getItem('lastDest'); } catch { /* sin almacenamiento */ }
+    const pick = [profile?.destination_id, last, destinations.find(d => d.supplies_dealers)?.id, destinations[0].id]
+      .find(id => id && destinations.some(d => d.id === id));
+    setSelectedDest(pick || '');
   }, [destinations, isPunto, profile, selectedDest]);
+  const chooseDest = (id) => {
+    setSelectedDest(id);
+    try { localStorage.setItem('lastDest', id); } catch { /* sin almacenamiento */ }
+  };
 
   async function handleSignIn(e) {
     e.preventDefault();
-    setError('');
+    setError(''); setAuthMsg('');
     const { error: err } = await supabase.auth.signInWithPassword({
       email: e.currentTarget.email.value,
       password: e.currentTarget.password.value
     });
-    if (err) setError(err.message);
+    if (err) setError(/invalid login/i.test(err.message) ? 'Email o contraseña incorrectos.' : friendlyError(err.message));
   }
 
-  // Ejecuta una operación del servidor, muestra errores/avisos y refresca
+  async function handleForgot(email) {
+    setError(''); setAuthMsg('');
+    if (!email?.trim()) { setError('Escribí tu email arriba y volvé a tocar «Olvidé mi contraseña».'); return; }
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/` });
+    if (err) setError(friendlyError(err.message));
+    else setAuthMsg('Si ese email tiene una cuenta, te mandamos un enlace para elegir una contraseña nueva. Revisá también la carpeta de spam. El enlace dura poco: abrilo en cuanto llegue.');
+  }
+
+  async function handleNewPassword(e) {
+    e.preventDefault();
+    const f = e.currentTarget;
+    const p1 = f.password.value, p2 = f.password2.value;
+    setError('');
+    if (p1.length < 10) { setError('La contraseña tiene que tener al menos 10 caracteres.'); return; }
+    if (p1 !== p2) { setError('Las dos contraseñas no coinciden.'); return; }
+    setBusy(true);
+    const { error: err } = await supabase.auth.updateUser({ password: p1 });
+    setBusy(false);
+    if (err) { setError(friendlyError(err.message)); return; }
+    setRecovery(false);
+    setNotice('Contraseña actualizada. Ya podés usar la plataforma con tu contraseña nueva.');
+  }
+
+  // Ejecuta una operación del servidor, muestra errores/avisos y refresca.
+  // Mientras corre, los botones quedan bloqueados (evita operaciones duplicadas por doble clic).
   async function run(promise, okMessage, onOk) {
-    setError(''); setNotice('');
-    const { data, error: err } = await promise;
-    if (err) { setError(friendlyError(err.message)); return false; }
-    setModal(null);
-    if (okMessage) setNotice(typeof okMessage === 'function' ? okMessage(data) : okMessage);
-    if (onOk) onOk(data);
-    loadData(true);
-    return true;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const { data, error: err } = await promise;
+      if (err) { setError(friendlyError(err.message)); return false; }
+      setModal(null);
+      if (okMessage) setNotice(typeof okMessage === 'function' ? okMessage(data) : okMessage);
+      if (onOk) onOk(data);
+      loadData(true);
+      return true;
+    } catch (e) {
+      setError(friendlyError(e?.message || 'No se pudo completar la operación'));
+      return false;
+    } finally { setBusy(false); }
   }
 
   async function saveItem(e) {
     e.preventDefault();
+    if (busy) return;
     if (!form.name.trim()) { setError('Nombre obligatorio'); return; }
+    if (!form.category) { setError('Elegí la categoría del material'); return; }
     const base = {
       name: form.name.trim(),
       sku: form.sku?.trim() || null,
@@ -311,29 +379,41 @@ export default function App() {
     const payload = editingItem ? base : { ...base, stock_nucleo: Number(form.stock_nucleo) || 0 };
     const files = form.photoFiles || [];
     const existing = editingItem ? (form.photo_urls || []) : [];
-    const req = editingItem
-      ? supabase.from('items').update(payload).eq('id', editingItem).select().single()
-      : supabase.from('items').insert([payload]).select().single();
-    setError(''); setNotice('');
-    const { data: saved, error: err } = await req;
-    if (err) { setError(friendlyError(err.message)); return; }
-    let msg = editingItem ? 'Material actualizado' : 'Material creado';
-    if (files.length) {
-      const urls = [];
-      for (let i = 0; i < files.length; i++) {
-        const f = files[i];
-        const ext = (f.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const path = `${slug(saved.name)}${saved.brand && saved.brand !== 'Genérico' ? '-' + slug(saved.brand) : ''}-${existing.length + i + 1}-${Date.now().toString(36)}.${ext}`;
-        const up = await supabase.storage.from('item-photos').upload(path, f, { upsert: false, contentType: f.type });
-        if (up.error) { setError(`El material se guardó pero la foto no se pudo subir: ${friendlyError(up.error.message)}`); break; }
-        urls.push(supabase.storage.from('item-photos').getPublicUrl(path).data.publicUrl);
+    setBusy(true); setError(''); setNotice('');
+    try {
+      // Las fotos se achican y validan ANTES de guardar, así un archivo inválido no deja el material a medias
+      const blobs = [];
+      for (const f of files) blobs.push(await compressImage(f));
+      const req = editingItem
+        ? supabase.from('items').update(payload).eq('id', editingItem).select().single()
+        : supabase.from('items').insert([payload]).select().single();
+      const { data: saved, error: err } = await req;
+      if (err) { setError(friendlyError(err.message)); return; }
+      let msg = editingItem ? 'Material actualizado' : 'Material creado';
+      let warn = '';
+      // Fotos quitadas: se borra el archivo del almacenamiento (si no se puede, la foto igual deja de mostrarse)
+      if (editingItem) {
+        const before = items.find(x => x.id === editingItem)?.photo_urls || [];
+        const gone = before.filter(u => !existing.includes(u) && isStorageUrl(u)).map(u => decodeURIComponent(String(u).split('/item-photos/')[1] || '').split('?')[0]).filter(Boolean);
+        if (gone.length) { try { await supabase.storage.from('item-photos').remove(gone); } catch { /* sin permiso: se ignora */ } }
       }
-      if (urls.length) {
-        const u = await supabase.from('items').update({ photo_urls: [...existing, ...urls] }).eq('id', saved.id);
-        if (u.error) setError(u.error.message); else msg += ` con ${urls.length} foto(s)`;
+      if (blobs.length) {
+        const urls = [];
+        for (let i = 0; i < blobs.length; i++) {
+          const path = `${slug(saved.name)}${saved.brand && saved.brand !== 'Genérico' ? '-' + slug(saved.brand) : ''}-${existing.length + i + 1}-${Date.now().toString(36)}.jpg`;
+          const up = await supabase.storage.from('item-photos').upload(path, blobs[i], { upsert: false, contentType: 'image/jpeg' });
+          if (up.error) { warn = `El material se guardó pero una foto no se pudo subir: ${friendlyError(up.error.message)}`; break; }
+          urls.push(supabase.storage.from('item-photos').getPublicUrl(path).data.publicUrl);
+        }
+        if (urls.length) {
+          const u = await supabase.from('items').update({ photo_urls: [...existing, ...urls] }).eq('id', saved.id);
+          if (u.error) warn = u.error.message; else msg += ` con ${urls.length} foto(s) nueva(s)`;
+        }
       }
-    }
-    setModal(null); setNotice(msg); setForm(emptyItem); setEditingItem(null); loadData(true);
+      setModal(null); setNotice(warn ? `${msg}. Atención: ${warn}` : msg); setForm(emptyItem); setEditingItem(null); loadData(true);
+    } catch (err) {
+      setError(friendlyError(err?.message || 'No se pudo guardar el material'));
+    } finally { setBusy(false); }
   }
 
   function deleteItem(item) {
@@ -355,28 +435,52 @@ export default function App() {
 
   function saveWithdrawal(e) {
     e.preventDefault();
+    if (busy) return;
     const w = withdrawal;
-    if (!w.item_id || Number(w.qty) < 1 || !w.reason_detail.trim()) { setError('Falta información'); return; }
-    run(supabase.rpc('register_withdrawal', {
-      p_item_id: w.item_id, p_qty: Number(w.qty), p_reason_type: w.reason_type, p_reason_detail: w.reason_detail.trim(),
+    const lines = w.lines.filter(l => l.item_id);
+    if (!lines.length) { setError('Elegí al menos un material'); return; }
+    if (lines.some(l => !(Number(l.qty) >= 1))) { setError('Todas las cantidades tienen que ser de 1 o más'); return; }
+    if (!w.reason_detail.trim()) { setError('Falta la descripción del retiro'); return; }
+    run(supabase.rpc('register_withdrawals', {
+      p_lines: lines.map(l => ({ item_id: l.item_id, qty: Number(l.qty) })),
+      p_reason_type: w.reason_type, p_reason_detail: w.reason_detail.trim(),
       p_recipient_last_name: w.recipient_last_name.trim() || null, p_vehicle_plate: w.vehicle_plate.trim() || null,
       p_notes: w.notes || null
-    }), 'Retiro registrado', () => setWithdrawal({ item_id: '', qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' }));
+    }), lines.length > 1 ? `Retiro registrado (${lines.length} materiales)` : 'Retiro registrado', () => setWithdrawal(emptyWithdrawal()));
+  }
+
+  function openSend(originId = '') {
+    setError(''); setNotice('');
+    setModal({ type: 'send', origin_id: originId, destination_id: '', exceptional: false, exception_reason: '', recipient_name: '', notes: '', lines: [{ item_id: '', qty: 1 }] });
   }
 
   function saveShipment(e) {
     e.preventDefault();
+    if (busy) return;
     const d = modal;
     const lines = d.lines.filter(l => l.item_id && Number(l.qty) > 0);
     if (!d.destination_id) { setError('Elegí el destino del envío'); return; }
     if (!lines.length) { setError('Agregá al menos un material con su cantidad'); return; }
+    if (d.exceptional && !d.exception_reason?.trim()) { setError('Contá el motivo del envío excepcional'); return; }
     const dealer = destinations.find(x => x.id === d.destination_id)?.is_depot === false;
     run(supabase.rpc('create_shipment', {
       p_destination_id: d.destination_id,
       p_items: lines.map(l => ({ item_id: l.item_id, qty: Number(l.qty) })),
       p_recipient_name: d.recipient_name || null, p_notes: d.notes || null,
-      p_origin_id: d.origin_id || null
+      p_origin_id: d.origin_id || null,
+      p_exception_reason: d.exceptional ? d.exception_reason.trim() : null
     }), dealer ? 'Envío registrado. Quedó como registro de lo enviado al concesionario.' : 'Envío registrado. Queda «en camino» hasta que lo reciban y lo controlen.');
+  }
+
+  function ackMovement(m) {
+    run(supabase.rpc('ack_movement', { p_movement_id: m.id }), 'Marcado como visto');
+  }
+
+  function changeUser(u, patch) {
+    if ((patch.role || u.role) === 'punto' && !(('destination_id' in patch) ? patch.destination_id : u.destination_id)) {
+      setError('Un usuario con rol «Depósito» necesita un depósito asignado: elegí primero el depósito.'); return;
+    }
+    run(supabase.from('profiles').update(patch).eq('id', u.id), `Usuario «${u.full_name || u.email}» actualizado`);
   }
 
   function saveReception(e) {
@@ -473,14 +577,29 @@ export default function App() {
 
   function saveAdjust(e) {
     e.preventDefault();
+    if (busy) return;
     if (!modal.reason?.trim()) { setError('El motivo del ajuste es obligatorio'); return; }
+    // Dejar el stock por debajo de lo reservado para eventos pide una confirmación explícita
+    if (modal.isRosario && modal.reserved > 0 && Number(modal.new_qty) < modal.reserved && !modal.confirmLow) {
+      setError(''); setModal(p => ({ ...p, confirmLow: true })); return;
+    }
     run(supabase.rpc('adjust_stock', {
       p_item_id: modal.item_id, p_destination_id: modal.destination_id || null,
       p_new_qty: Number(modal.new_qty), p_reason: modal.reason.trim()
     }), 'Ajuste registrado');
   }
 
-  const emptyEvent = () => ({ type: 'event', event_name: '', start_date: '', end_date: '', brand: '', carried_by: '', notes: '', lines: [{ item_id: '', qty: 1 }] });
+  const emptyEvent = () => ({ type: 'event', editing: null, event_name: '', start_date: '', end_date: '', brand: '', carried_by: '', notes: '', lines: [{ item_id: '', qty: 1 }] });
+  // Editar un evento abierto: lo ya entregado queda bloqueado (locked) y solo se puede sumar o ajustar lo reservado
+  function editEvent(ev) {
+    const lines = eventItems.filter(ei => ei.event_id === ev.id).map(ei => ({ item_id: ei.item_id, qty: ei.qty_allocated, locked: Boolean(ei.remito_salida_date) }));
+    setError(''); setNotice('');
+    setModal({
+      type: 'event', editing: ev.id, anyDelivered: lines.some(l => l.locked), event_name: ev.event_name || '',
+      start_date: ev.start_date || ev.event_date || '', end_date: ev.end_date || ev.event_date || '', brand: ev.brand || '',
+      carried_by: ev.carried_by || '', notes: ev.notes || '', lines: lines.length ? lines : [{ item_id: '', qty: 1 }]
+    });
+  }
 
   // Disponible = stock del DEPOSITO MARKETING ROSARIO - reservado por otros eventos abiertos que se pisan en fechas
   function availableOf(itemId, start, end, excludeEventId) {
@@ -498,11 +617,20 @@ export default function App() {
 
   function saveEvent(e) {
     e.preventDefault();
+    if (busy) return;
     const d = modal;
     const lines = d.lines.filter(l => l.item_id && Number(l.qty) > 0);
     if (!d.event_name.trim() || !d.start_date || !d.end_date || !d.brand) { setError('Completá nombre, fechas y marca del evento'); return; }
     if (d.end_date < d.start_date) { setError('La fecha de fin no puede ser anterior a la de inicio'); return; }
     if (!lines.length) { setError('Agregá al menos un elemento con su cantidad'); return; }
+    if (d.editing) {
+      run(supabase.rpc('update_event', {
+        p_event_id: d.editing, p_event_name: d.event_name.trim(), p_start_date: d.start_date, p_end_date: d.end_date, p_brand: d.brand,
+        p_carried_by: d.carried_by?.trim() || null, p_notes: d.notes || null,
+        p_items: lines.map(l => ({ item_id: l.item_id, qty: Number(l.qty) }))
+      }), 'Evento actualizado');
+      return;
+    }
     run(supabase.rpc('create_event', {
       p_event_name: d.event_name.trim(), p_start_date: d.start_date, p_end_date: d.end_date, p_brand: d.brand,
       p_items: lines.map(l => ({ item_id: l.item_id, qty: Number(l.qty) })),
@@ -519,18 +647,14 @@ export default function App() {
 
   function saveReturnEvent(e) {
     e.preventDefault();
+    if (busy) return;
     const m = modal;
-    const job = (async () => {
-      for (const l of m.lines) {
-        const r = await supabase.rpc('close_event_item', {
-          p_event_item_id: l.id, p_qty_returned: Number(l.qty_returned), p_remito_llegada_date: null,
-          p_remito_llegada_signed_by: m.by?.trim() || null
-        });
-        if (r.error) return r;
-      }
-      return supabase.rpc('close_event', { p_event_id: m.event.id });
-    })();
-    run(job, 'Regreso registrado. Lo devuelto volvió al DEPOSITO MARKETING ROSARIO.');
+    // Una sola operación en el servidor: o se registra todo el regreso o no se registra nada
+    run(supabase.rpc('return_event', {
+      p_event_id: m.event.id,
+      p_returns: m.lines.map(l => ({ event_item_id: l.id, qty_returned: Number(l.qty_returned) })),
+      p_signed_by: m.by?.trim() || null
+    }), 'Regreso registrado. Lo devuelto volvió al DEPOSITO MARKETING ROSARIO.');
   }
 
   function cancelEvent(ev) {
@@ -554,10 +678,10 @@ export default function App() {
 
   const linesByShipment = useMemo(() => {
     const acc = {};
-    movements.filter(m => m.shipment_id && m.type === 'envio_destino').forEach(m => { (acc[m.shipment_id] = acc[m.shipment_id] || []).push(m); });
+    shipLines.filter(m => m.shipment_id && m.type === 'envio_destino').forEach(m => { (acc[m.shipment_id] = acc[m.shipment_id] || []).push(m); });
     Object.values(acc).forEach(a => a.sort((x, y) => new Date(x.created_at) - new Date(y.created_at)));
     return acc;
-  }, [movements]);
+  }, [shipLines]);
 
   const inTransit = useMemo(() => shipments.filter(x => x.status === 'en_transito' || x.status === 'parcial'), [shipments]);
   const diffShipments = useMemo(() => shipments.filter(x => x.status === 'con_diferencia'), [shipments]);
@@ -569,30 +693,34 @@ export default function App() {
   // Último envío por destino y material (seguimiento de lo enviado a concesionarios)
   const lastSent = useMemo(() => {
     const o = {};
-    movements.filter(m => m.type === 'envio_destino').forEach(m => {
+    shipLines.filter(m => m.type === 'envio_destino').forEach(m => {
       const k = `${m.destino_id}|${m.item_id}`;
       if (!o[k] || new Date(m.created_at) > new Date(o[k].created_at)) o[k] = m;
     });
     return o;
-  }, [movements]);
+  }, [shipLines]);
   // Solo los depósitos (no los concesionarios) generan avisos de reposición en la plataforma
   const pointAlerts = useMemo(() => pointStatus.filter(p => p.status !== 'ok' && depotIds.has(p.destination_id)), [pointStatus, depotIds]);
 
-  const filteredItems = useMemo(() =>
-    items.filter(item => {
-      const hayQuery = `${item.name} ${item.sku || ''} ${item.brand || ''}`.toLowerCase().includes(query.toLowerCase());
-      return hayQuery
+  const filteredItems = useMemo(() => {
+    const tokens = norm(query.trim()).split(/\s+/).filter(Boolean);
+    return items.filter(item => {
+      const hay = norm(`${item.name} ${item.sku || ''} ${item.brand || ''}`);
+      return tokens.every(t => hay.includes(t))
         && (categoryFilter === 'Todas' || item.category === categoryFilter)
-        && (brandFilter === 'Todas' || item.brand === brandFilter);
-    }), [items, query, categoryFilter, brandFilter]);
+        && (brandFilter === 'Todas' || item.brand === brandFilter)
+        && (!photoFilter || (item.photo_urls || []).some(u => !isStorageUrl(u)));
+    });
+  }, [items, query, categoryFilter, brandFilter, photoFilter]);
 
   const history = useMemo(() => {
     const rows = [];
-    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a DEPOSITO MARKETING ROSARIO', item: r.items?.name, qty: r.qty, detalle: [r.source, r.cost ? fmtMoney(r.cost) : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
-    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: 'Retiro de DEPOSITO MARKETING ROSARIO', item: w.items?.name, qty: w.qty, detalle: [reasonLabel(w.reason_type), w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
+    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a ' + ROSARIO, item: r.items?.name, brand: '', place: ROSARIO, qty: r.qty, detalle: [SOURCE_LABELS[r.source] || r.source, r.cost ? fmtMoney(r.cost) : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
+    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: MOVE_LABELS.retiro, item: w.items?.name, brand: '', place: ROSARIO, qty: w.qty, detalle: [reasonLabel(w.reason_type), w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
     movements.forEach(m => {
+      const base = { brand: m.items?.brand || '', place: m.origen || '', placeId: m.origen_id || m.destino_id || null, destId: m.destino_id || null, originId: m.origen_id || null, destName: m.destination || destById[m.destino_id]?.name || '' };
       if (m.type === 'stock_inicial' || m.type === 'compra') {
-        rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type], item: m.items?.name, qty: m.qty, detalle: m.notes || '', quien: m.person });
+        rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type], item: m.items?.name, qty: m.qty, detalle: m.notes || '', quien: m.person, ...base, place: ROSARIO });
         return;
       }
       let detalle = '';
@@ -605,13 +733,16 @@ export default function App() {
       else if (m.type === 'salida_evento' || m.type === 'retorno_evento' || m.type === 'consumo_evento') detalle = m.notes || '';
       else detalle = m.notes || '';
       const signed = m.type === 'ajuste' && m.qty_after != null ? `${m.qty_after - m.qty_before > 0 ? '+' : '−'}${m.qty}` : m.qty;
-      rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type] || m.type, item: m.items?.name, qty: signed, detalle, quien: m.person });
+      const review = m.type === 'ajuste' && (m.needs_review ? 'pendiente' : (m.reviewed_by_name ? `visto por ${m.reviewed_by_name}` : ''));
+      const exceptional = m.type === 'envio_destino' && /Envío excepcional/i.test(m.notes || '');
+      rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type] || 'Otro movimiento', item: m.items?.name, qty: signed, detalle, quien: m.person, ...base, review: review || '', exceptional });
     });
     return rows.sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 1000);
   }, [restocks, withdrawals, movements, destById]);
 
   // ---------- Render ----------
-  if (!session) return <Login onSubmit={handleSignIn} error={error} />;
+  if (!session) return <Login onSubmit={handleSignIn} onForgot={handleForgot} error={error} message={authMsg} />;
+  if (recovery) return <SetPassword onSubmit={handleNewPassword} error={error} busy={busy} />;
   if (profile === undefined) return <div className="login-screen"><div className="skeleton-wrap" aria-busy="true" style={{ width: 'min(420px, 90vw)' }}><div className="skeleton sk-row" /><div className="skeleton sk-block" /></div></div>;
   if (!profile || role === 'none') return <NoAccess onSignOut={() => supabase.auth.signOut()} />;
   if (isPunto && !profile.destination_id) return <NoAccess onSignOut={() => supabase.auth.signOut()} message="Tu usuario todavía no tiene un depósito asignado. Pedile a un administrador que lo configure." />;
@@ -621,26 +752,31 @@ export default function App() {
     : [
         ['dashboard', 'Dashboard'], ['stock', 'Materiales'], ['depositos', 'Depósitos y puntos'],
         ['recepcion', 'En camino', inTransit.length + diffShipments.length, diffShipments.length > 0],
-        ['ingresos', 'Ingresos'], ['retiros', 'Retiros'], ['movimientos', 'Envíos'], ['eventos', 'Eventos'], ['historial', 'Historial']
+        ['ingresos', 'Ingresos'], ['retiros', 'Retiros'], ['movimientos', 'Envíos'], ['eventos', 'Eventos'], ['historial', 'Historial'],
+        ...(role === 'admin' ? [['usuarios', 'Usuarios']] : [])
       ];
 
-  const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: isPunto ? 'Por recibir' : 'Envíos en camino', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Envíos', eventos: 'Eventos', historial: 'Historial' };
+  const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: isPunto ? 'Por recibir' : 'Envíos en camino', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Envíos', eventos: 'Eventos', historial: 'Historial', usuarios: 'Usuarios' };
   const helps = {
-    dashboard: 'Resumen de lo que necesita atención hoy: alertas de stock, envíos en camino, eventos y diferencias de recepción.',
+    dashboard: 'Resumen de lo que necesita atención hoy: diferencias de recepción, ajustes para revisar, envíos demorados y eventos.',
     stock: 'Catálogo de materiales con su stock en el DEPOSITO MARKETING ROSARIO. Buscá o elegí una categoría para ver la lista. Con «Ajustar stock» corregís cantidades dejando motivo.',
     depositos: 'Stock de cada depósito y concesionario. Santa Fe y Cañada controlan lo que reciben; en los demás concesionarios solo queda el registro de lo enviado.',
     mideposito: 'El stock de tu depósito. Sube cuando confirmás la recepción de un envío y baja con cada entrega.',
-    recepcion: isPunto ? 'Envíos que salieron hacia tu depósito. Tocá Recibir y marcá ✓ si llegó todo bien o ✗ si hay una diferencia (elegís el motivo y la cantidad). Lo que llegó bien se suma a tu stock al instante.' : 'Envíos que salieron del DEPOSITO MARKETING ROSARIO y todavía no fueron recibidos. Si el destino reporta una diferencia, queda en rojo hasta que la resuelvas.',
-    ingresos: 'Mercadería que entra al DEPOSITO MARKETING ROSARIO (compras o devoluciones). Suma al stock.',
-    retiros: 'Salidas del DEPOSITO MARKETING ROSARIO por regalos, usos internos o incidencias. Descuenta del stock.',
-    movimientos: 'Todos los envíos que salieron del DEPOSITO MARKETING ROSARIO. Para mandar materiales usá «Nuevo envío»; la recepción se controla en «Envíos en camino».',
+    recepcion: isPunto ? 'Envíos que salieron hacia tu depósito. Tocá Recibir y marcá ✓ si llegó todo bien o ✗ si hay una diferencia (elegís el motivo y la cantidad). Lo que llegó bien se suma a tu stock al instante.' : 'Envíos que salieron de un depósito y todavía no fueron recibidos. Si el destino reporta una diferencia, queda en rojo hasta que la resuelvas.',
+    ingresos: 'Mercadería que entra al DEPOSITO MARKETING ROSARIO por compras a proveedores u otras fuentes. Suma al stock. Las devoluciones desde depósitos se registran con «Devolver a Rosario».',
+    retiros: 'Salidas del DEPOSITO MARKETING ROSARIO por regalos, usos internos o incidencias. Descuenta del stock. Podés retirar varios materiales juntos.',
+    movimientos: 'Envíos a depósitos y concesionarios, con el depósito desde donde salieron. Para mandar materiales usá «Nuevo envío»; la recepción se controla en «En camino».',
     eventos: 'Cada evento reserva materiales para sus fechas. El stock recién sale al tocar «Entregar materiales» y vuelve al registrar el regreso.',
-    historial: 'Registro de todo lo que entró, salió o se movió, con fecha y responsable.'
+    historial: 'Registro de todo lo que entró, salió o se movió, con fecha y responsable. Filtrá por depósito, fechas o marca y exportalo a Excel.',
+    usuarios: 'Quién puede entrar a la plataforma y con qué permisos.'
   };
   const myDest = destById[selectedDest];
-  const roleLabel = { admin: 'Administrador', editor: 'Editor', punto: 'Depósito', viewer: 'Solo lectura' }[role];
+  const roleLabel = isOwner ? 'Dueño' : { admin: 'Administrador', editor: 'Editor', punto: 'Depósito', viewer: 'Solo lectura' }[role];
+  const myOwnDest = destById[profile.destination_id];
+  const defaultOrigin = myOwnDest?.supplies_dealers ? myOwnDest.id : '';
 
   return (
+    <UiCtx.Provider value={{ busy, error: modal ? error : '' }}>
     <div className={`app-shell ${rail ? 'nav-rail' : 'nav-wide'}${narrow ? ' nav-narrow' : ''}`}>
       {narrow && navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
       <aside className="sidebar" aria-label="Menú principal">
@@ -674,24 +810,26 @@ export default function App() {
           <div className="topbar-actions">
             {isStaff && tab === 'stock' && <button className="primary-btn" onClick={() => { setEditingItem(null); setForm(emptyItem); setModal({ type: 'item' }); }}>+ Nuevo material</button>}
             {isStaff && tab === 'ingresos' && <button className="primary-btn" onClick={() => setModal({ type: 'restock' })}>+ Registrar ingreso</button>}
-            {isStaff && tab === 'retiros' && <button className="primary-btn" onClick={() => setModal({ type: 'withdrawal' })}>+ Registrar retiro</button>}
-            {isStaff && tab === 'movimientos' && <button className="primary-btn" onClick={() => setModal({ type: 'send', origin_id: '', destination_id: '', recipient_name: '', notes: '', lines: [{ item_id: '', qty: 1 }] })}>+ Nuevo envío</button>}
+            {isStaff && tab === 'retiros' && <button className="primary-btn" onClick={() => { setError(''); setNotice(''); setModal({ type: 'withdrawal' }); }}>+ Registrar retiro</button>}
+            {isStaff && tab === 'movimientos' && <button className="primary-btn" onClick={() => openSend(defaultOrigin)}>+ Nuevo envío</button>}
             {isStaff && tab === 'eventos' && <button className="primary-btn" onClick={() => { setError(''); setNotice(''); setModal(emptyEvent()); }}>+ Nuevo evento</button>}
           </div>
         </header>
 
-        {error && <div className="error-banner">{error}</div>}
-        {notice && <div className="notice-banner">{notice}</div>}
+        {error && !modal && <div className="error-banner" role="alert">{error}</div>}
+        {notice && <div className="notice-banner" role="status">{notice}</div>}
 
         {loading ? <div className="skeleton-wrap" aria-busy="true"><div className="skeleton sk-row" /><div className="skeleton sk-row" /><div className="skeleton sk-block" /></div> :
-          tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} diffs={diffShipments} linesByShipment={linesByShipment} canResolve={isStaff} onResolve={openResolve} events={events} history={history} onGo={setTab} /> :
-          tab === 'stock' ? <StockTable items={filteredItems} inDepots={inDepots} reserved={reserved} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter}
-              onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', sku: item.sku || '' }); setModal({ type: 'item' }); }}
-              onAdjust={(item) => setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reason: '', place: 'DEPOSITO MARKETING ROSARIO' })}
+          tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} diffs={diffShipments} linesByShipment={linesByShipment} canResolve={isStaff} onResolve={openResolve} events={events} history={history} reviewAdj={reviewAdj} onAck={ackMovement} busy={busy} onGo={setTab} /> :
+          tab === 'stock' ? <StockTable items={filteredItems} totalItems={items.length} categories={categories} inDepots={inDepots} reserved={reserved} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter} photoFilter={photoFilter} setPhotoFilter={setPhotoFilter} allItems={items}
+              onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', sku: item.sku || '', photoFiles: [] }); setError(''); setNotice(''); setModal({ type: 'item' }); }}
+              onAdjust={(item) => { setError(''); setNotice(''); setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reserved: reserved[item.id] || 0, reason: '', place: ROSARIO, isRosario: true }); }}
               onDelete={deleteItem} onPhotos={(item) => setModal({ type: 'photos', item })} /> :
+          tab === 'usuarios' ? <UsersTab users={users} destinations={destinations} isOwner={isOwner} meId={profile.id} busy={busy} onChange={changeUser} /> :
           tab === 'depositos' || tab === 'mideposito' ? (
             <DepositoView
-              sentList={shipments.filter(x => x.destination_id === selectedDest)} linesByShipment={linesByShipment} lastSent={lastSent} isDepot={Boolean(destById[selectedDest]?.is_depot)} isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={setSelectedDest}
+              sentList={shipments.filter(x => x.destination_id === selectedDest)} madeList={shipments.filter(x => x.origin_id === selectedDest)} linesByShipment={linesByShipment} lastSent={lastSent} isDepot={Boolean(destById[selectedDest]?.is_depot)} isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={chooseDest}
+              onSend={() => openSend(selectedDest)}
               rows={destStock.filter(r => r.destination_id === selectedDest)} status={pointStatus.filter(p => p.destination_id === selectedDest)}
               itemById={itemById} inTransit={inTransit.filter(m => m.destination_id === selectedDest)} onGoReceive={() => setTab('recepcion')}
               onReturn={(r) => setModal({ type: 'return', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, notes: '', place: destById[selectedDest]?.name })}
@@ -704,17 +842,17 @@ export default function App() {
           tab === 'ingresos' ? <RestockTable rows={restocks} /> :
           tab === 'retiros' ? <WithdrawalTable rows={withdrawals} /> :
           tab === 'movimientos' ? <MovementTable rows={shipments} lines={linesByShipment} canResolve={isStaff} onResolve={openResolve} destById={destById} /> :
-          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} itemById={itemById} isStaff={isStaff} onNew={() => { setError(''); setNotice(''); setModal(emptyEvent()); }} onPrint={(ev) => setModal({ type: 'retiro', event: ev })} onWithdraw={(ev) => setModal({ type: 'withdrawEvent', event: ev, by: ev.carried_by || '' })} onReturn={(ev) => setModal({ type: 'returnEvent', event: ev, by: '', lines: eventItems.filter(ei => ei.event_id === ev.id && ei.remito_salida_date && !ei.remito_llegada_ok).map(ei => ({ id: ei.id, name: ei.items?.name, qty: ei.qty_allocated, qty_returned: ei.qty_allocated })) })} onCancel={cancelEvent} /> :
-          tab === 'historial' ? <HistoryTab rows={history} /> : null
+          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} itemById={itemById} isStaff={isStaff} onNew={() => { setError(''); setNotice(''); setModal(emptyEvent()); }} onPrint={(ev) => setModal({ type: 'retiro', event: ev })} onWithdraw={(ev) => setModal({ type: 'withdrawEvent', event: ev, by: ev.carried_by || '' })} onReturn={(ev) => setModal({ type: 'returnEvent', event: ev, by: '', lines: eventItems.filter(ei => ei.event_id === ev.id && ei.remito_salida_date && !ei.remito_llegada_ok).map(ei => ({ id: ei.id, name: ei.items?.name, qty: ei.qty_allocated, qty_returned: ei.qty_allocated })) })} onCancel={cancelEvent} onEdit={editEvent} /> :
+          tab === 'historial' ? <HistoryTab rows={history} destinations={destinations} loaded={{ mov: movements.length, ret: withdrawals.length, ing: restocks.length }} canAck={isStaff} /> : null
         }
       </main>
 
       {modal?.type === 'confirm' && <ConfirmModal modal={modal} onClose={() => setModal(null)} />}
       {modal?.type === 'photos' && <PhotoViewer item={modal.item} onClose={() => setModal(null)} />}
-      {modal?.type === 'item' && <ItemModal form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setModal(null)} onSubmit={saveItem} />}
-      {modal?.type === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveRestock} />}
+      {modal?.type === 'item' && <ItemModal categories={categories} form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setModal(null)} onSubmit={saveItem} />}
+      {modal?.type === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} onClose={() => setModal(null)} onSubmit={saveRestock} />}
       {modal?.type === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveWithdrawal} />}
-      {modal?.type === 'send' && <SendModal modal={modal} setModal={setModal} items={items} destinations={destinations} destStock={destStock} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveShipment} />}
+      {modal?.type === 'send' && <SendModal modal={modal} setModal={setModal} items={items} destinations={destinations} destStock={destStock} reserved={reserved} isStaff={isStaff} ownDestId={profile.destination_id} onClose={() => setModal(null)} onSubmit={saveShipment} />}
       {modal?.type === 'event' && <EventModal modal={modal} setModal={setModal} items={items} availableOf={availableOf} onClose={() => setModal(null)} onSubmit={saveEvent} />}
       {modal?.type === 'withdrawEvent' && <WithdrawEventModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveWithdrawEvent} />}
       {modal?.type === 'returnEvent' && <ReturnEventModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveReturnEvent} />}
@@ -732,16 +870,18 @@ export default function App() {
           <p className="muted small">Se descuenta de {modal.place} y se suma al stock de DEPOSITO MARKETING ROSARIO. Registralo cuando la mercadería ya llegó a Rosario.</p>
         </Modal>
       )}
-      {modal?.type === 'pstockin' && <PointStockInModal modal={modal} setModal={setModal} items={items} onClose={() => setModal(null)} onSubmit={savePointStockIn} />}
+      {modal?.type === 'pstockin' && <PointStockInModal modal={modal} setModal={setModal} items={items} qtyOf={(id) => (destStock.find(r => r.destination_id === modal.destination_id && r.item_id === id)?.qty || 0)} onClose={() => setModal(null)} onSubmit={savePointStockIn} />}
       {modal?.type === 'pmin' && <PointMinModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveMin} />}
-      {modal?.type === 'adjust' && <AdjustModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveAdjust} />}
+      {modal?.type === 'adjust' && <AdjustModal willReview={!isStaff} modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveAdjust} />}
     </div>
+    </UiCtx.Provider>
   );
 }
 
 /* ---------------- Pantallas ---------------- */
 
-function Login({ onSubmit, error }) {
+function Login({ onSubmit, onForgot, error, message }) {
+  const [email, setEmail] = useState('');
   return (
     <div className="login-screen pro-login">
       <section className="login-hero" aria-hidden="true">
@@ -754,15 +894,32 @@ function Login({ onSubmit, error }) {
       <form className="login-card" onSubmit={onSubmit}>
         <div className="brand dark-brand">MARKETING<span>Control de stock</span></div>
         <h2>Ingresar</h2>
-        <input type="email" name="email" placeholder="Email" autoComplete="username" required />
+        <input type="email" name="email" placeholder="Email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} />
         <input type="password" name="password" placeholder="Contraseña" autoComplete="current-password" required />
         <button className="primary-btn" type="submit">Ingresar</button>
-        {error && <p className="error-banner">{error}</p>}
+        <button type="button" className="link-btn forgot-link" onClick={() => onForgot(email)}>Olvidé mi contraseña</button>
+        {message && <p className="notice-banner" role="status">{message}</p>}
+        {error && <p className="error-banner" role="alert">{error}</p>}
       </form>
     </div>
   );
 }
 
+function SetPassword({ onSubmit, error, busy }) {
+  return (
+    <div className="login-screen">
+      <form className="login-card" onSubmit={onSubmit}>
+        <div className="brand dark-brand">MARKETING<span>Control de stock</span></div>
+        <h2>Elegí tu contraseña nueva</h2>
+        <p className="muted small">Usá al menos 10 caracteres. Mejor si mezclás letras, números y símbolos.</p>
+        <input type="password" name="password" placeholder="Contraseña nueva" autoComplete="new-password" minLength={10} required />
+        <input type="password" name="password2" placeholder="Repetí la contraseña" autoComplete="new-password" minLength={10} required />
+        <button className="primary-btn" type="submit" disabled={busy}>{busy ? 'Guardando…' : 'Guardar contraseña'}</button>
+        {error && <p className="error-banner" role="alert">{error}</p>}
+      </form>
+    </div>
+  );
+}
 function NoAccess({ onSignOut, message }) {
   return (
     <div className="login-screen">
@@ -776,8 +933,16 @@ function NoAccess({ onSignOut, message }) {
   );
 }
 
-function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, diffs, linesByShipment, canResolve, onResolve, events, history, onGo }) {
-  const urgent = inTransit.filter(m => daysSince(m.created_at) > 5).length;
+function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, diffs, linesByShipment, canResolve, onResolve, events, history, reviewAdj, onAck, busy, onGo }) {
+  const urgent = inTransit.filter(m => daysSince(m.created_at) > 5);
+  const t = todayStr();
+  const soon = addDays(t, 3);
+  const evTodo = events.map(e => ({ e, st: eventState(e, eventItems.filter(l => l.event_id === e.id)) }))
+    .filter(({ e, st }) => st && (st.alert || (st.cls === 'reservado' && (e.start_date || e.event_date) <= soon)))
+    .map(({ e, st }) => (st.alert ? { e, st } : { e, st: { ...st, text: `Entrega en los próximos 3 días · ${st.text.replace('Reservado · ', '')}` } }));
+  const adjs = reviewAdj || [];
+  const nothing = !diffs.length && !adjs.length && !urgent.length && !evTodo.length;
+  const nAlerts = centralAlerts.length + pointAlerts.length;
   return (
     <>
       {diffs.length > 0 && (
@@ -796,33 +961,56 @@ function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, d
       )}
 
       <section className="stats-grid">
-        <Stat label="Materiales" value={items.length} />
-        <Stat label="Alertas de stock" value={centralAlerts.length + pointAlerts.length} tone={centralAlerts.length + pointAlerts.length > 0 ? "warning" : ""} />
-        <Stat label={urgent ? `Envíos en camino (${urgent} hace +5 días)` : 'Envíos en camino'} value={inTransit.length} tone={urgent ? 'warning' : ''} onClick={() => onGo('recepcion')} />
-        <Stat label="Eventos abiertos" value={events.filter(e => e.status === 'abierto').length} />
+        <Stat label="Materiales" value={items.length} onClick={() => onGo('stock')} />
+        <Stat label="Alertas de stock" value={nAlerts} tone={nAlerts > 0 ? 'warning' : ''} onClick={() => onGo('depositos')} />
+        <Stat label={urgent.length ? `Envíos en camino (${urgent.length} hace +5 días)` : 'Envíos en camino'} value={inTransit.length} tone={urgent.length ? 'warning' : ''} onClick={() => onGo('recepcion')} />
+        <Stat label="Eventos abiertos" value={events.filter(e => e.status === 'abierto').length} onClick={() => onGo('eventos')} />
       </section>
 
-      {(() => {
-        const todo = events.map(e => ({ e, st: eventState(e, eventItems.filter(l => l.event_id === e.id)) })).filter(x => x.st?.alert);
-        return todo.length > 0 && (
-          <section className="card review-card">
-            <h2>Eventos que necesitan acción ({todo.length})</h2>
-            {todo.map(({ e, st }) => (
+      <section className="card review-card">
+        <h2>Para revisar{!nothing ? ` (${adjs.length + urgent.length + evTodo.length})` : ''}</h2>
+        {nothing && <p className="muted">Todo al día: no hay ajustes, envíos demorados ni eventos que necesiten acción.</p>}
+        {adjs.length > 0 && (
+          <>
+            <h3 className="sub">Ajustes de stock hechos por depósitos</h3>
+            {adjs.map(m => (
+              <div key={m.id} className="review-item">
+                <div className="review-head"><strong>{m.items?.name}</strong><small>{m.origen} · {fmtDateTime(m.created_at)} · {m.person}</small></div>
+                <p className="obs-text">{m.qty_after != null ? `De ${m.qty_before} a ${m.qty_after}` : m.notes}{m.reason_detail ? ` · «${m.reason_detail}»` : ''}</p>
+                {canResolve && <button className="secondary-btn small-btn" disabled={busy} onClick={() => onAck(m)}>Visto</button>}
+              </div>
+            ))}
+          </>
+        )}
+        {urgent.length > 0 && (
+          <>
+            <h3 className="sub">Envíos en camino hace más de 5 días</h3>
+            {urgent.map(sh => (
+              <div key={sh.id} className="review-item">
+                <div className="review-head"><strong>{sh.destination_name}</strong><small>salió {fmtDate(sh.created_at)} · hace {daysSince(sh.created_at)} días{sh.origin_name ? ` · desde ${sh.origin_name}` : ''}</small></div>
+                <button className="secondary-btn small-btn" onClick={() => onGo('recepcion')}>Ver en camino</button>
+              </div>
+            ))}
+          </>
+        )}
+        {evTodo.length > 0 && (
+          <>
+            <h3 className="sub">Eventos</h3>
+            {evTodo.map(({ e, st }) => (
               <div key={e.id} className="review-item">
                 <div className="review-head"><strong>{e.event_name}</strong><small>{fmtRange(e)}</small></div>
                 <span className={`evt-state ${st.cls}`}>{st.text}</span>
                 <button className="secondary-btn small-btn" onClick={() => onGo('eventos')}>Ir a Eventos</button>
               </div>
             ))}
-          </section>
-        );
-      })()}
-
+          </>
+        )}
+      </section>
 
       <div className="two-col">
         <section className="card">
           <h2>Alertas</h2>
-          {centralAlerts.length + pointAlerts.length === 0 && <p className="muted">Sin alertas</p>}
+          {nAlerts === 0 && <p className="muted">Sin alertas</p>}
           {centralAlerts.length > 0 && (
             <>
               <h3 className="sub">Recomprar al proveedor (DEPOSITO MARKETING ROSARIO)</h3>
@@ -850,41 +1038,71 @@ function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, d
     </>
   );
 }
-
 function Stat({ label, value, tone, onClick }) {
-  return <div className={`stat ${tone || ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}><strong><CountUp value={value} /></strong><span>{label}</span></div>;
+  const inner = <><strong><CountUp value={value} /></strong><span>{label}</span></>;
+  return onClick
+    ? <button type="button" className={`stat clickable ${tone || ''}`} onClick={onClick}>{inner}</button>
+    : <div className={`stat ${tone || ''}`}>{inner}</div>;
+}
+function RowMenu({ children }) {
+  const [open, setOpen] = useState(false);
+  const ref = React.useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const key = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', down); document.addEventListener('keydown', key);
+    return () => { document.removeEventListener('mousedown', down); document.removeEventListener('keydown', key); };
+  }, [open]);
+  return (
+    <div className="row-menu" ref={ref}>
+      <button type="button" className="menu-btn" aria-haspopup="menu" aria-expanded={open} aria-label="Más acciones" onClick={() => setOpen(o => !o)}>⋯</button>
+      {open && <div className="menu-list" role="menu" onClick={() => setOpen(false)}>{children}</div>}
+    </div>
+  );
 }
 
-function StockTable({ items: allItems, inDepots, reserved, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, onEdit, onAdjust, onDelete, onPhotos }) {
+function StockTable({ items: filtered, allItems, categories, inDepots, reserved, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, photoFilter, setPhotoFilter, onEdit, onAdjust, onDelete, onPhotos }) {
   const PAGE = 25;
   const [page, setPage] = useState(0);
   const [showAll, setShowAll] = useState(false);
-  useEffect(() => { setPage(0); }, [query, categoryFilter, brandFilter]);
+  useEffect(() => { setPage(0); }, [query, categoryFilter, brandFilter, photoFilter]);
   // La lista (y sus fotos) no se carga hasta que se busca, se filtra o se pide ver todo
-  const searching = showAll || query.trim() !== '' || categoryFilter !== 'Todas' || brandFilter !== 'Todas';
-  const catCounts = CATEGORIES.map(c => [c, allItems.filter(i => i.category === c).length]).filter(x => x[1] > 0);
-  const pages = Math.max(1, Math.ceil(allItems.length / PAGE));
+  const searching = showAll || query.trim() !== '' || categoryFilter !== 'Todas' || brandFilter !== 'Todas' || photoFilter;
+  // Los chips suman exactamente el total de materiales: lo que no tenga categoría conocida va a «Sin categoría»
+  const known = new Set(categories.map(c => c.name));
+  const catCounts = [
+    ...categories.map(c => [c.name, allItems.filter(i => i.category === c.name).length]),
+    ['Sin categoría', allItems.filter(i => !known.has(i.category)).length]
+  ].filter(x => x[1] > 0);
+  const driveCount = allItems.filter(i => (i.photo_urls || []).some(u => !isStorageUrl(u))).length;
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE));
   const cur = Math.min(page, pages - 1);
-  const items = searching ? allItems.slice(cur * PAGE, cur * PAGE + PAGE) : [];
+  const items = searching ? filtered.slice(cur * PAGE, cur * PAGE + PAGE) : [];
+  const catNames = [...categories.map(c => c.name), ...(allItems.some(i => !known.has(i.category)) ? [] : [])];
   return (
     <section className="card">
       <div className="card-head"><h2>Materiales</h2></div>
       <div className="filters-row">
         <label className="filter-label">Buscar<input value={query} onChange={e => setQuery(e.target.value)} placeholder="Nombre, SKU o marca…" /></label>
-        <label className="filter-label">Categoría<select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option>Todas</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></label>
+        <label className="filter-label">Categoría<select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option>Todas</option>{catNames.map(c => <option key={c}>{c}</option>)}</select></label>
         <label className="filter-label">Marca<select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}><option>Todas</option><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select></label>
+        {isStaff && driveCount > 0 && (
+          <label className="check-filter"><input type="checkbox" checked={photoFilter} onChange={e => setPhotoFilter(e.target.checked)} /> Fotos de Drive a revisar ({driveCount})</label>
+        )}
       </div>
       {!searching && (
         <div className="empty-state">
           <p><strong>{allItems.length} materiales cargados.</strong> Buscá por nombre, SKU o marca, o elegí una categoría:</p>
           <div className="cat-chips">
-            {catCounts.map(([c, n]) => <button type="button" key={c} className="chip-btn" onClick={() => setCategoryFilter(c)}>{c} <span>{n}</span></button>)}
+            {catCounts.map(([c, n]) => <button type="button" key={c} className="chip-btn" onClick={() => c !== 'Sin categoría' && setCategoryFilter(c)}>{c} <span>{n}</span></button>)}
           </div>
           <button type="button" className="link-btn" onClick={() => setShowAll(true)}>Ver todo el listado</button>
         </div>
       )}
       {searching && (<>
-      <table>
+      <p className="muted small">{filtered.length} material(es){filtered.length !== allItems.length ? ` de ${allItems.length}` : ''}</p>
+      <table className="stack-table">
         <thead><tr><th></th><th>Material</th><th>Categoría</th><th>Marca</th><th>DEPOSITO MARKETING ROSARIO</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
         <tbody>
           {items.map(i => {
@@ -896,26 +1114,28 @@ function StockTable({ items: allItems, inDepots, reserved, isStaff, query, setQu
                     <Thumb url={i.photo_urls[0]} alt={i.name} />
                     {i.photo_urls.length > 1 && <span className="thumb-count">{i.photo_urls.length}</span>}
                   </button>) : null}</td>
-                <td><strong>{i.name}</strong><small>{i.sku || 'Sin SKU'}</small></td>
-                <td>{i.category}</td><td>{i.brand}</td>
-                <td className={low ? 'warn' : ''}>{i.stock_nucleo || 0}{reserved?.[i.id] > 0 && <small>reservado {reserved[i.id]} · disponible {Math.max(0, (i.stock_nucleo || 0) - reserved[i.id])}</small>}{Number(i.reorder_nucleo) > 0 && <small>mín. {i.reorder_nucleo}</small>}</td>
-                <td>{inDepots[i.id] || 0}</td>
+                <td className="cell-main"><strong>{i.name}</strong><small>{i.sku || 'Sin SKU'}</small></td>
+                <td data-label="Categoría">{i.category}</td><td data-label="Marca">{i.brand}</td>
+                <td data-label="Rosario" className={low ? 'warn' : ''}>{i.stock_nucleo || 0}{reserved?.[i.id] > 0 && <small>reservado {reserved[i.id]} · disponible {Math.max(0, (i.stock_nucleo || 0) - reserved[i.id])}</small>}{Number(i.reorder_nucleo) > 0 && <small>mín. {i.reorder_nucleo}</small>}</td>
+                <td data-label="En depósitos">{inDepots[i.id] || 0}</td>
                 {isStaff && <td className="actions-col">
-                  <button className="link-btn" onClick={() => onEdit(i)}>Editar</button>
-                  <button className="link-btn" onClick={() => onAdjust(i)}>Ajustar stock</button>
-                  <button className="link-btn danger" onClick={() => onDelete(i)}>Eliminar</button>
+                  <RowMenu>
+                    <button type="button" role="menuitem" onClick={() => onEdit(i)}>Editar</button>
+                    <button type="button" role="menuitem" onClick={() => onAdjust(i)}>Ajustar stock</button>
+                    <button type="button" role="menuitem" className="danger" onClick={() => onDelete(i)}>Eliminar</button>
+                  </RowMenu>
                 </td>}
               </tr>
             );
           })}
-          {!items.length && <tr><td colSpan="7" className="muted">No hay materiales</td></tr>}
+          {!items.length && <tr><td colSpan="7" className="muted">No hay materiales con esos filtros</td></tr>}
         </tbody>
       </table>
       <p className="muted small photo-legend">❓ = la foto no está disponible (el archivo no se encuentra en Drive o no se puede abrir). Sin ícono = ese material no tiene foto cargada. Podés reemplazarla con «Editar».</p>
       {pages > 1 && (
         <div className="pager">
           <button type="button" className="secondary-btn" disabled={cur === 0} onClick={() => setPage(cur - 1)}>← Anterior</button>
-          <span className="muted">Página {cur + 1} de {pages} · {allItems.length} materiales</span>
+          <span className="muted">Página {cur + 1} de {pages} · {filtered.length} materiales</span>
           <button type="button" className="secondary-btn" disabled={cur >= pages - 1} onClick={() => setPage(cur + 1)}>Siguiente →</button>
         </div>
       )}
@@ -923,76 +1143,117 @@ function StockTable({ items: allItems, inDepots, reserved, isStaff, query, setQu
     </section>
   );
 }
+function DestSelect({ destinations, value, onChange }) {
+  const byId = Object.fromEntries(destinations.map(d => [d.id, d]));
+  const shown = destinations.filter(d => d.active !== false || d.id === value);
+  const depots = shown.filter(d => d.is_depot);
+  const groups = {};
+  shown.filter(d => !d.is_depot).forEach(d => { const k = d.supplied_by_id || ''; (groups[k] = groups[k] || []).push(d); });
+  const keys = Object.keys(groups).sort((a, b) => (a === '' ? -1 : b === '' ? 1 : (byId[a]?.name || '').localeCompare(byId[b]?.name || '')));
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} aria-label="Depósito o punto">
+      {depots.length > 0 && <optgroup label="Depósitos">{depots.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>}
+      {keys.map(k => (
+        <optgroup key={k || 'ros'} label={k ? `Concesionarios que abastece ${byId[k]?.name || 'otro depósito'}` : 'Concesionarios que abastece Rosario'}>
+          {groups[k].map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
 
-function DepositoView({ sentList, linesByShipment, lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onReturn, onMin, onAdjust }) {
+function DepositoView({ sentList, madeList, linesByShipment, lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, onSend, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onReturn, onMin, onAdjust }) {
   const statusByItem = Object.fromEntries(status.map(s => [s.item_id, s]));
   const dest = destinations.find(d => d.id === selectedDest);
+  const canSend = canOperate && isDepot && dest?.supplies_dealers;
+  const isEquip = (r) => itemById[r.item_id]?.kind === 'equipamiento';
+  const consum = rows.filter(r => !isEquip(r));
+  const equip = rows.filter(isEquip);
+  const nameCell = (r) => <td className="cell-main"><strong>{itemById[r.item_id]?.name || 'Material'}</strong><small>{itemById[r.item_id]?.category}</small></td>;
   return (
     <>
       {!isPunto && (
         <section className="card" style={{ marginBottom: 18 }}>
           <label className="inline-label">Depósito / punto
-            <select value={selectedDest} onChange={e => setSelectedDest(e.target.value)}>
-              {destinations.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
+            <DestSelect destinations={destinations} value={selectedDest} onChange={setSelectedDest} />
           </label>
         </section>
       )}
       {!isDepot && (
         <section className="card" style={{ marginBottom: 18 }}>
           <h2>Envíos registrados</h2>
-          <table>
+          <table className="stack-table">
             <thead><tr><th>Fecha</th><th>Materiales enviados</th><th>Recibe</th><th>Enviado por</th></tr></thead>
             <tbody>
               {sentList.map(sh => (
                 <tr key={sh.id}>
-                  <td>{fmtDate(sh.created_at)}</td>
-                  <td><ul className="ship-lines">{(linesByShipment[sh.id] || []).map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul></td>
-                  <td>{sh.recipient_name || '—'}</td><td>{sh.created_by_name}</td>
+                  <td className="cell-main">{fmtDate(sh.created_at)}{sh.origin_name && <small>desde {sh.origin_name}</small>}</td>
+                  <td data-label="Materiales"><ul className="ship-lines">{(linesByShipment[sh.id] || []).map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul></td>
+                  <td data-label="Recibe">{sh.recipient_name || '—'}</td><td data-label="Enviado por">{sh.created_by_name}</td>
                 </tr>
               ))}
-              {!sentList.length && <tr><td colSpan="4" className="muted">Todavía no se registraron envíos a este concesionario.</td></tr>}
+              {!sentList.length && <tr><td colSpan="4" className="muted">Todavía no se le envió material a este concesionario.</td></tr>}
             </tbody>
           </table>
         </section>
       )}
+      {canSend && (
+        <section className="card" style={{ marginBottom: 18 }}>
+          <div className="card-head"><h2>Envíos realizados desde {dest.name}</h2><button className="primary-btn" onClick={onSend}>Enviar a concesionario</button></div>
+          <table className="stack-table">
+            <thead><tr><th>Fecha</th><th>Destino</th><th>Materiales</th><th>Recibe</th><th>Enviado por</th></tr></thead>
+            <tbody>
+              {madeList.slice(0, 30).map(sh => (
+                <tr key={sh.id}>
+                  <td className="cell-main">{fmtDate(sh.created_at)}{sh.exception_reason && <small><span className="chip excepcional" title={sh.exception_reason}>Excepcional</span></small>}</td>
+                  <td data-label="Destino">{sh.destination_name}</td>
+                  <td data-label="Materiales"><ul className="ship-lines">{(linesByShipment[sh.id] || []).map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul></td>
+                  <td data-label="Recibe">{sh.recipient_name || '—'}</td><td data-label="Enviado por">{sh.created_by_name}</td>
+                </tr>
+              ))}
+              {!madeList.length && <tr><td colSpan="5" className="muted">Todavía no se hicieron envíos a concesionarios desde acá.</td></tr>}
+            </tbody>
+          </table>
+          {madeList.length > 30 && <p className="muted small">Se muestran los últimos 30 envíos. El resto está en «Envíos».</p>}
+        </section>
+      )}
       {inTransit.length > 0 && (
-        <div className="notice-banner clickable" onClick={onGoReceive}>
+        <button type="button" className="notice-banner clickable" onClick={onGoReceive}>
           Hay {inTransit.length} envío(s) en camino para {dest?.name || 'este depósito'}. Tocá acá para confirmarlos cuando lleguen.
-        </div>
+        </button>
       )}
       <section className="card">
         <div className="card-head">
-          <h2>{dest?.name || 'Depósito'}</h2>
+          <h2>{isDepot ? 'Consumibles' : (dest?.name || 'Concesionario')}{isDepot ? ` · ${dest?.name || ''}` : ''}</h2>
           {canOperate && isDepot && !isPunto && <button className="primary-btn" onClick={onStockIn}>+ Cargar stock</button>}
         </div>
         {isDepot
-          ? <p className="muted small">El stock sube cuando se confirma la recepción de un envío. Baja con cada entrega, envío o devolución a Rosario. El punto de restock sugerido se calcula con tus entregas de los últimos 90 días.</p>
+          ? <p className="muted small">El stock sube cuando se confirma la recepción de un envío. Baja con cada entrega, envío o devolución a Rosario. El punto de restock sugerido se calcula con las entregas y los envíos a concesionarios de los últimos 90 días.</p>
           : <p className="muted small">Concesionario: acá queda el registro de lo que se le envió, con fecha y cantidad. Lo que el concesionario va usando se descuenta a mano con «Ajustar», y la reposición se pide por mensaje (no genera alertas en la plataforma).</p>}
-        <table>
+        <table className="stack-table">
           <thead>{isDepot
             ? <tr><th>Material</th><th>Stock</th><th>Punto de restock</th><th>Reponer</th><th>Estado</th>{canOperate && <th></th>}</tr>
             : <tr><th>Material</th><th>Total enviado (menos lo ajustado)</th><th>Último envío</th>{canOperate && <th></th>}</tr>}</thead>
           <tbody>
-            {rows.map(r => {
+            {(isDepot ? consum : rows).map(r => {
               const s = statusByItem[r.item_id];
               const st = s?.status || 'ok';
               const ls = lastSent[`${selectedDest}|${r.item_id}`];
               if (!isDepot) return (
                 <tr key={r.item_id}>
-                  <td><strong>{itemById[r.item_id]?.name || 'Material'}</strong><small>{itemById[r.item_id]?.category}</small></td>
-                  <td>{r.qty}</td>
-                  <td>{ls ? `${ls.qty} el ${fmtDate(ls.created_at)}` : '—'}</td>
+                  {nameCell(r)}
+                  <td data-label="Total enviado">{r.qty}</td>
+                  <td data-label="Último envío">{ls ? `${ls.qty} el ${fmtDate(ls.created_at)}` : '—'}</td>
                   {canOperate && <td className="actions-col">{!isPunto && <button className="link-btn" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}<button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button></td>}
                 </tr>
               );
               return (
                 <tr key={r.item_id}>
-                  <td><strong>{itemById[r.item_id]?.name || 'Material'}</strong><small>{itemById[r.item_id]?.category}</small></td>
-                  <td className={st !== 'ok' ? 'warn' : ''}>{r.qty}</td>
-                  <td>{s?.restock_point || r.min_qty || '—'}{r.min_qty > 0 && <small>mínimo cargado: {r.min_qty}</small>}</td>
-                  <td>{s?.suggested_qty > 0 && st !== 'ok' ? `+${s.suggested_qty}` : '—'}</td>
-                  <td><span className={`chip ${st}`}>{st === 'ok' ? 'OK' : st === 'sin_stock' ? 'Sin stock' : 'Reponer'}</span></td>
+                  {nameCell(r)}
+                  <td data-label="Stock" className={st !== 'ok' ? 'warn' : ''}>{r.qty}</td>
+                  <td data-label="Punto de restock">{s?.restock_point || r.min_qty || '—'}{r.min_qty > 0 && <small>mínimo cargado: {r.min_qty}</small>}</td>
+                  <td data-label="Reponer">{s?.suggested_qty > 0 && st !== 'ok' ? `+${s.suggested_qty}` : '—'}</td>
+                  <td data-label="Estado"><span className={`chip ${st}`}>{st === 'ok' ? 'OK' : st === 'sin_stock' ? 'Sin stock' : 'Reponer'}</span></td>
                   {canOperate && <td className="actions-col">
                     <button className="link-btn" disabled={r.qty < 1} onClick={() => onDeliver(r)}>Entregar</button>
                     {!isPunto && <button className="link-btn" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}
@@ -1002,14 +1263,35 @@ function DepositoView({ sentList, linesByShipment, lastSent, isDepot, isPunto, c
                 </tr>
               );
             })}
-            {!rows.length && <tr><td colSpan="6" className="muted">Todavía no hay stock en este depósito. Cuando llegue un envío, confirmá la recepción y va a aparecer acá.</td></tr>}
+            {!(isDepot ? consum : rows).length && <tr><td colSpan="6" className="muted">{isDepot ? 'No hay consumibles en este depósito. Cuando llegue un envío, confirmá la recepción y va a aparecer acá.' : 'Todavía no hay stock registrado en este concesionario.'}</td></tr>}
           </tbody>
         </table>
       </section>
+      {isDepot && (
+        <section className="card" style={{ marginTop: 18 }}>
+          <h2>Equipamiento en préstamo</h2>
+          <p className="muted small">Son elementos que se prestan y vuelven (no se consumen), por eso no tienen punto de restock. Cuando ya no se usan en este depósito, devolvelos a Rosario.</p>
+          <table className="stack-table">
+            <thead><tr><th>Equipo</th><th>Cantidad</th>{canOperate && <th></th>}</tr></thead>
+            <tbody>
+              {equip.map(r => (
+                <tr key={r.item_id}>
+                  {nameCell(r)}
+                  <td data-label="Cantidad">{r.qty}</td>
+                  {canOperate && <td className="actions-col">
+                    {!isPunto && <button className="link-btn" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}
+                    <button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button>
+                  </td>}
+                </tr>
+              ))}
+              {!equip.length && <tr><td colSpan="3" className="muted">No hay equipamiento prestado en este depósito.</td></tr>}
+            </tbody>
+          </table>
+        </section>
+      )}
     </>
   );
 }
-
 function ShipmentLines({ lines, onlyProblems }) {
   const rows = onlyProblems ? lines.filter(l => l.pending_qty > 0 || l.in_transit_qty > 0) : lines;
   return (
@@ -1066,7 +1348,7 @@ function ReceptionTable({ rows, diffRows, lines, canReceive, canResolve, onRecei
                 <tr key={sh.id}>
                   <td>{fmtDate(sh.created_at)}<small className={d > 5 ? 'warn' : ''}>{d === 0 ? 'hoy' : `hace ${d} día(s)`}{d > 5 ? ' · urgente' : ''}</small></td>
                   <td>{parcial && <small className="obs-text">Parcial: solo falta lo que sigue en camino</small>}<ShipmentLines lines={lines[sh.id] || []} onlyProblems={parcial} /></td>
-                  <td>{sh.destination_name}</td><td>{sh.recipient_name || '—'}</td><td>{sh.created_by_name}</td>
+                  <td>{sh.destination_name}{sh.origin_name && <small>desde {sh.origin_name}</small>}{sh.exception_reason && <small><span className="chip excepcional" title={sh.exception_reason}>Excepcional</span></small>}</td><td>{sh.recipient_name || '—'}</td><td>{sh.created_by_name}</td>
                   {canReceive && <td><button className="primary-btn small-btn" onClick={() => onReceive(sh)}>Recibir</button></td>}
                 </tr>
               );
@@ -1082,52 +1364,72 @@ function ReceptionTable({ rows, diffRows, lines, canReceive, canResolve, onRecei
 function RestockTable({ rows }) {
   return (
     <section className="card">
-      <h2>Ingresos de stock</h2>
+      <h2>Ingresos al DEPOSITO MARKETING ROSARIO</h2>
       <table>
         <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Origen</th><th>Costo</th><th>Registrado por</th></tr></thead>
-        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{r.source}</td><td>{r.cost ? fmtMoney(r.cost) : '—'}</td><td>{r.person}</td></tr>)}</tbody>
+        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{SOURCE_LABELS[r.source] || r.source}</td><td>{r.cost ? fmtMoney(r.cost) : '—'}</td><td>{r.person}</td></tr>)}</tbody>
       </table>
     </section>
   );
 }
 
 function WithdrawalTable({ rows }) {
+  // Los retiros con varios materiales comparten batch_id: se muestran como un solo retiro
+  const groups = useMemo(() => {
+    const map = new Map();
+    rows.forEach(r => {
+      const k = r.batch_id || r.id;
+      if (!map.has(k)) map.set(k, { key: k, first: r, lines: [] });
+      map.get(k).lines.push(r);
+    });
+    return [...map.values()];
+  }, [rows]);
   return (
     <section className="card">
       <h2>Retiros / Uso (DEPOSITO MARKETING ROSARIO)</h2>
-      <table>
-        <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Motivo</th><th>Detalle</th><th>Cliente</th><th>Patente</th><th>Registrado por</th></tr></thead>
-        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{reasonLabel(r.reason_type)}</td><td>{r.reason_detail}</td><td>{r.recipient_last_name || '—'}</td><td>{r.vehicle_plate || '—'}</td><td>{r.person}</td></tr>)}</tbody>
-      </table>
-    </section>
-  );
-}
-
-function MovementTable({ rows, lines, canResolve, onResolve, destById }) {
-  const label = { en_transito: 'En camino', parcial: 'Parcial: resto en camino', con_diferencia: 'Con diferencia – pendiente', recibido: 'Recibido ✓', recibido_con_diferencias: 'Recibido (diferencia resuelta)' };
-  const chip = { en_transito: 'en_transito', parcial: 'en_transito', con_diferencia: 'con_diferencia', recibido: 'recibido', recibido_con_diferencias: 'recibido_con_diferencia' };
-  return (
-    <section className="card">
-      <h2>Envíos a depósitos y puntos</h2>
-      <table>
-        <thead><tr><th>Fecha</th><th>Destino</th><th>Materiales</th><th>Estado</th><th>Recibió</th><th>Enviado por</th></tr></thead>
-        <tbody>{rows.map(sh => (
-          <tr key={sh.id}>
-            <td>{fmtDate(sh.created_at)}</td><td>{sh.destination_name}{sh.origin_name && <small>desde {sh.origin_name}</small>}</td>
-            <td><ShipmentLines lines={lines[sh.id] || []} />{sh.reception_notes && <small className="obs-text">“{sh.reception_notes}”</small>}</td>
-            <td><span className={`chip ${chip[sh.status]}`}>{destById?.[sh.destination_id]?.is_depot === false ? 'Registrado' : label[sh.status]}</span>
-              {sh.status === 'con_diferencia' && canResolve && <button className="link-btn" onClick={() => onResolve(sh)}>Resolver</button>}
-              {sh.status === 'recibido_con_diferencias' && sh.reviewed_by_name && <small>resuelto por {sh.reviewed_by_name}</small>}</td>
-            <td>{sh.received_by_name ? <>{sh.received_by_name}<small>{fmtDateTime(sh.received_at)}</small></> : '—'}</td>
-            <td>{sh.created_by_name}</td>
+      <table className="stack-table">
+        <thead><tr><th>Fecha</th><th>Materiales</th><th>Unidades</th><th>Motivo</th><th>Detalle</th><th>Cliente</th><th>Patente</th><th>Registrado por</th></tr></thead>
+        <tbody>{groups.map(({ key, first: r, lines }) => (
+          <tr key={key}>
+            <td className="cell-main">{fmtDate(r.created_at)}</td>
+            <td data-label="Materiales">{lines.length > 1 ? <ul className="ship-lines">{lines.map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul> : r.items?.name}</td>
+            <td data-label="Unidades">{lines.reduce((a, l) => a + l.qty, 0)}</td>
+            <td data-label="Motivo">{reasonLabel(r.reason_type)}</td><td data-label="Detalle">{r.reason_detail}</td>
+            <td data-label="Cliente">{r.recipient_last_name || '—'}</td><td data-label="Patente">{r.vehicle_plate || '—'}</td><td data-label="Registrado por">{r.person}</td>
           </tr>))}
-          {!rows.length && <tr><td colSpan="6" className="muted">Todavía no hay envíos</td></tr>}
+          {!groups.length && <tr><td colSpan="8" className="muted">Todavía no hay retiros</td></tr>}
         </tbody>
       </table>
     </section>
   );
 }
-
+function MovementTable({ rows, lines, canResolve, onResolve, destById }) {
+  const label = { en_transito: 'En camino', parcial: 'Parcial: resto en camino', con_diferencia: 'Con diferencia – pendiente', recibido: 'Recibido ✓', recibido_con_diferencias: 'Recibido (diferencia resuelta)', recibido_con_diferencia: 'Recibido (diferencia resuelta)' };
+  const chip = { en_transito: 'en_transito', parcial: 'en_transito', con_diferencia: 'con_diferencia', recibido: 'recibido', recibido_con_diferencias: 'recibido_con_diferencia', recibido_con_diferencia: 'recibido_con_diferencia' };
+  return (
+    <section className="card">
+      <h2>Envíos a depósitos y concesionarios</h2>
+      <table className="stack-table">
+        <thead><tr><th>Fecha</th><th>Sale desde</th><th>Destino</th><th>Materiales</th><th>Estado</th><th>Recibió</th><th>Enviado por</th></tr></thead>
+        <tbody>{rows.map(sh => (
+          <tr key={sh.id}>
+            <td className="cell-main">{fmtDate(sh.created_at)}</td>
+            <td data-label="Sale desde">{sh.origin_name || ROSARIO}
+              {sh.exception_reason && <small><span className="chip excepcional" title={sh.exception_reason}>Excepcional</span> {sh.exception_reason}</small>}</td>
+            <td data-label="Destino">{sh.destination_name}</td>
+            <td data-label="Materiales"><ShipmentLines lines={lines[sh.id] || []} />{sh.reception_notes && <small className="obs-text">“{sh.reception_notes}”</small>}</td>
+            <td data-label="Estado"><span className={`chip ${chip[sh.status] || ''}`}>{destById?.[sh.destination_id]?.is_depot === false ? 'Registrado' : (label[sh.status] || 'Otro estado')}</span>
+              {sh.status === 'con_diferencia' && canResolve && <button className="link-btn" onClick={() => onResolve(sh)}>Resolver</button>}
+              {(sh.status === 'recibido_con_diferencias' || sh.status === 'recibido_con_diferencia') && sh.reviewed_by_name && <small>resuelto por {sh.reviewed_by_name}</small>}</td>
+            <td data-label="Recibió">{sh.received_by_name ? <>{sh.received_by_name}<small>{fmtDateTime(sh.received_at)}</small></> : '—'}</td>
+            <td data-label="Enviado por">{sh.created_by_name}</td>
+          </tr>))}
+          {!rows.length && <tr><td colSpan="7" className="muted">Todavía no hay envíos</td></tr>}
+        </tbody>
+      </table>
+    </section>
+  );
+}
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 // Estado práctico de un evento abierto y qué falta hacer
 function eventState(e, lines) {
@@ -1149,7 +1451,7 @@ const fmtRange = (e) => {
   return a === b ? fmtDate(a + 'T12:00:00') : `${fmtDate(a + 'T12:00:00')} al ${fmtDate(b + 'T12:00:00')}`;
 };
 
-function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, onWithdraw, onReturn, onCancel }) {
+function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, onWithdraw, onReturn, onCancel, onEdit }) {
   return (
     <section className="card">
       <h2>Eventos</h2>
@@ -1184,6 +1486,7 @@ function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, on
                 </table>
                 <div className="event-actions">
                   <button className="secondary-btn small-btn" onClick={() => onPrint(e)}>Retiro para imprimir</button>
+                  {isStaff && e.status === 'abierto' && <button className="secondary-btn small-btn" onClick={() => onEdit(e)}>Editar evento</button>}
                   {isStaff && e.status === 'abierto' && pendingOut && <button className="primary-btn small-btn" onClick={() => onWithdraw(e)}>Entregar materiales</button>}
                   {isStaff && e.status === 'abierto' && outNow && <button className="primary-btn small-btn" onClick={() => onReturn(e)}>Registrar regreso</button>}
                   {isStaff && e.status === 'abierto' && !lines.some(l => l.remito_salida_date) && <button className="link-btn danger" onClick={() => onCancel(e)}>Cancelar evento</button>}
@@ -1199,31 +1502,69 @@ function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, on
   );
 }
 
-function HistoryTab({ rows }) {
+const dayOf = (iso) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+function HistoryTab({ rows, destinations, loaded, canAck }) {
   const PAGE = 50;
   const [q, setQ] = useState('');
   const [tipo, setTipo] = useState('Todos');
+  const [place, setPlace] = useState('Todos');
+  const [brand, setBrand] = useState('Todas');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [page, setPage] = useState(0);
-  useEffect(() => { setPage(0); }, [q, tipo]);
+  useEffect(() => { setPage(0); }, [q, tipo, place, brand, from, to]);
   const tipos = useMemo(() => Array.from(new Set(rows.map(r => r.tipo).filter(Boolean))).sort(), [rows]);
+  const brands = useMemo(() => Array.from(new Set(rows.map(r => r.brand).filter(Boolean))).sort(), [rows]);
+  const places = useMemo(() => [ROSARIO, ...destinations.filter(d => d.name !== ROSARIO).map(d => d.name)], [destinations]);
   const filtered = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return rows.filter(r => (tipo === 'Todos' || r.tipo === tipo) && (!t || [r.item, r.detalle, r.quien, r.tipo].some(x => String(x || '').toLowerCase().includes(t))));
-  }, [rows, q, tipo]);
+    const toks = norm(q.trim()).split(/\s+/).filter(Boolean);
+    return rows.filter(r => {
+      if (tipo !== 'Todos' && r.tipo !== tipo) return false;
+      if (place !== 'Todos' && r.place !== place && r.destName !== place) return false;
+      if (brand !== 'Todas' && r.brand !== brand) return false;
+      if (from && dayOf(r.at) < from) return false;
+      if (to && dayOf(r.at) > to) return false;
+      if (!toks.length) return true;
+      const hay = norm([r.item, r.detalle, r.quien, r.tipo, r.place].join(' '));
+      return toks.every(t => hay.includes(t));
+    });
+  }, [rows, q, tipo, place, brand, from, to]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE));
   const cur = Math.min(page, pages - 1);
   const visible = filtered.slice(cur * PAGE, cur * PAGE + PAGE);
+  const exportCsv = () => downloadCsv(
+    `historial-${todayStr()}.csv`,
+    ['Fecha', 'Tipo', 'Material', 'Marca', 'Cantidad', 'Depósito', 'Detalle', 'Usuario', 'Revisión'],
+    filtered.map(r => [fmtDateTime(r.at), r.tipo, r.item || '', r.brand || '', r.qty, r.place || '', r.detalle || '', r.quien || '', r.review ? (r.review === 'pendiente' ? 'Pendiente de revisión' : r.review) : ''])
+  );
+  const clear = () => { setQ(''); setTipo('Todos'); setPlace('Todos'); setBrand('Todas'); setFrom(''); setTo(''); };
+  const filtering = q || tipo !== 'Todos' || place !== 'Todos' || brand !== 'Todas' || from || to;
   return (
     <section className="card">
-      <h2>Historial completo</h2>
+      <div className="card-head"><h2>Historial completo</h2><button type="button" className="secondary-btn" onClick={exportCsv} disabled={!filtered.length}>Exportar Excel (CSV)</button></div>
       <div className="filters-row">
         <label className="filter-label">Buscar<input value={q} onChange={e => setQ(e.target.value)} placeholder="Material, detalle o usuario…" /></label>
         <label className="filter-label">Tipo<select value={tipo} onChange={e => setTipo(e.target.value)}><option>Todos</option>{tipos.map(t => <option key={t}>{t}</option>)}</select></label>
+        <label className="filter-label">Depósito / punto<select value={place} onChange={e => setPlace(e.target.value)}><option>Todos</option>{places.map(t => <option key={t}>{t}</option>)}</select></label>
+        <label className="filter-label">Marca<select value={brand} onChange={e => setBrand(e.target.value)}><option>Todas</option>{brands.map(t => <option key={t}>{t}</option>)}</select></label>
+        <label className="filter-label">Desde<input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} /></label>
+        <label className="filter-label">Hasta<input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} /></label>
+        {filtering && <button type="button" className="link-btn" onClick={clear}>Limpiar filtros</button>}
       </div>
-      <table>
+      <table className="stack-table">
         <thead><tr><th>Fecha</th><th>Tipo</th><th>Material</th><th>Cantidad</th><th>Detalle</th><th>Usuario</th></tr></thead>
-        <tbody>{visible.map(op => <tr key={op.id}><td>{fmtDateTime(op.at)}</td><td>{op.tipo}</td><td>{op.item}</td><td>{op.qty}</td><td>{op.detalle || '—'}</td><td>{op.quien}</td></tr>)}
-          {!visible.length && <tr><td colSpan="6" className="muted">Sin movimientos</td></tr>}</tbody>
+        <tbody>{visible.map(op => (
+          <tr key={op.id}>
+            <td className="cell-main">{fmtDateTime(op.at)}</td>
+            <td data-label="Tipo">{op.tipo}
+              {op.review === 'pendiente' && <small><span className="chip pendiente">Pendiente de revisión</span></small>}
+              {op.review && op.review !== 'pendiente' && <small><span className="chip visto">{op.review[0].toUpperCase() + op.review.slice(1)}</span></small>}
+              {op.exceptional && <small><span className="chip excepcional">Envío excepcional</span></small>}</td>
+            <td data-label="Material">{op.item}{op.brand && op.brand !== 'Genérico' ? <small>{op.brand}</small> : null}</td>
+            <td data-label="Cantidad">{op.qty}</td><td data-label="Detalle">{op.detalle || '—'}</td><td data-label="Usuario">{op.quien}</td>
+          </tr>))}
+          {!visible.length && <tr><td colSpan="6" className="muted">Sin movimientos con esos filtros</td></tr>}</tbody>
       </table>
       {pages > 1 && (
         <div className="pager">
@@ -1232,25 +1573,47 @@ function HistoryTab({ rows }) {
           <button type="button" className="secondary-btn" disabled={cur >= pages - 1} onClick={() => setPage(cur + 1)}>Siguiente →</button>
         </div>
       )}
+      <p className="muted small">Se cargan los últimos {loaded?.mov ?? 0} movimientos, {loaded?.ing ?? 0} ingresos y {loaded?.ret ?? 0} retiros (hasta 600, 200 y 200). Lo más viejo no aparece acá; la exportación incluye lo que ves con los filtros aplicados.</p>
     </section>
   );
 }
 
-/* ---------------- Modales ---------------- */
-
-function Modal({ title, onClose, onSubmit, submitLabel, children }) {
+function UsersTab({ users, destinations, isOwner, meId, busy, onChange }) {
+  const depots = destinations.filter(d => d.active !== false);
   return (
-    <div className="modal-overlay">
-      <form className="modal" onSubmit={onSubmit}>
-        <div className="card-head"><h2>{title}</h2><button type="button" className="close-btn" onClick={onClose}>×</button></div>
-        {children}
-        <div className="modal-actions"><button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button><button type="submit" className="primary-btn">{submitLabel}</button></div>
-      </form>
-    </div>
+    <section className="card">
+      <h2>Usuarios</h2>
+      <p className="muted small">Las personas nuevas se invitan desde Supabase → Authentication → Users; cuando entran por primera vez aparecen acá sin acceso hasta que les asignes un rol.{!isOwner && ' Solo el Dueño puede cambiar roles y depósitos.'}</p>
+      <table className="stack-table">
+        <thead><tr><th>Nombre</th><th>Email</th><th>Rol</th><th>Depósito asignado</th></tr></thead>
+        <tbody>
+          {users.map(u => (
+            <tr key={u.id}>
+              <td className="cell-main"><strong>{u.full_name || '—'}</strong>{u.is_owner && <small><span className="chip visto">Dueño</span></small>}{u.id === meId && <small>(vos)</small>}</td>
+              <td data-label="Email">{u.email}</td>
+              <td data-label="Rol">{isOwner && !u.is_owner
+                ? <select value={u.role} disabled={busy} onChange={e => onChange(u, { role: e.target.value })} aria-label={`Rol de ${u.full_name || u.email}`}>
+                    {Object.entries(ROLE_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                  </select>
+                : (u.is_owner ? 'Dueño (administrador)' : ROLE_LABELS[u.role] || u.role)}</td>
+              <td data-label="Depósito">{isOwner && !u.is_owner
+                ? <select value={u.destination_id || ''} disabled={busy} onChange={e => onChange(u, { destination_id: e.target.value || null })} aria-label={`Depósito de ${u.full_name || u.email}`}>
+                    <option value="">Ninguno</option>
+                    {depots.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                : (destinations.find(d => d.id === u.destination_id)?.name || '—')}</td>
+            </tr>
+          ))}
+          {!users.length && <tr><td colSpan="4" className="muted">No hay usuarios cargados</td></tr>}
+        </tbody>
+      </table>
+    </section>
   );
 }
+/* ---------------- Modales ---------------- */
 
 function ConfirmModal({ modal, onClose }) {
+  useScrollLock();
   return (
     <div className="modal-overlay">
       <div className="modal confirm-modal">
@@ -1266,6 +1629,7 @@ function ConfirmModal({ modal, onClose }) {
 }
 
 function PhotoViewer({ item, onClose }) {
+  useScrollLock();
   const [cur, setCur] = useState(0);
   const list = item.photo_urls || [];
   return (
@@ -1288,34 +1652,48 @@ function PhotoViewer({ item, onClose }) {
   );
 }
 
-function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
+function ItemModal({ categories, form, setForm, editing, onClose, onSubmit }) {
+  const [fileMsg, setFileMsg] = useState('');
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  // La categoría depende del tipo (consumible / equipamiento): al cambiar el tipo se vuelve a elegir
+  const cats = categories.filter(c => c.kind === form.kind);
+  const setKind = (k) => setForm(p => ({ ...p, kind: k, category: categories.some(c => c.name === p.category && c.kind === k) ? p.category : '' }));
+  const onFiles = (e) => {
+    const all = Array.from(e.target.files || []);
+    const ok = all.filter(f => /^image\/(jpeg|png|webp)$/i.test(f.type));
+    setFileMsg(ok.length < all.length ? `Se ignoraron ${all.length - ok.length} archivo(s): solo se aceptan fotos JPG, PNG o WebP.` : '');
+    set('photoFiles', ok);
+    if (ok.length < all.length && !ok.length) e.target.value = '';
+  };
   return (
     <Modal title={`${editing ? 'Editar' : 'Nuevo'} material`} onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar">
       <div className="form-grid">
         <label>Nombre *<input required value={form.name} onChange={e => set('name', e.target.value)} /></label>
         <label>SKU<input value={form.sku} onChange={e => set('sku', e.target.value.toUpperCase())} /></label>
-        <label>Tipo<select value={form.kind} onChange={e => set('kind', e.target.value)}><option value="consumible">Consumible (se entrega)</option><option value="equipamiento">Equipamiento (se presta y vuelve)</option></select></label>
-        <label>Categoría<select value={form.category} onChange={e => set('category', e.target.value)}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></label>
-        <label>Marca<select value={form.brand} onChange={e => set('brand', e.target.value)}><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select></label>
+        <label>Tipo<select value={form.kind} onChange={e => setKind(e.target.value)}><option value="consumible">Consumible (se entrega)</option><option value="equipamiento">Equipamiento (se presta y vuelve)</option></select></label>
+        <label>Categoría *<select required value={form.category} onChange={e => set('category', e.target.value)}><option value="">Elegí la categoría…</option>{cats.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}</select></label>
+        <label>Marca<select value={form.brand} onChange={e => set('brand', e.target.value)}><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select>
+          <small className="field-help">Genérico y Neostar aparecen para todas las marcas.</small></label>
         {form.category === 'Regalos' && (
           <label>Ocasión<select value={form.occasion} onChange={e => set('occasion', e.target.value)}><option value="">—</option><option>Nuevo</option><option>Usado</option><option>Service</option><option>Postventa</option></select></label>
         )}
         {!editing && <label>Stock inicial en DEPOSITO MARKETING ROSARIO<input type="number" min="0" value={form.stock_nucleo} onChange={e => set('stock_nucleo', e.target.value)} /></label>}
         <label>Mínimo DEPOSITO MARKETING ROSARIO (recompra)<input type="number" min="0" value={form.reorder_nucleo} onChange={e => set('reorder_nucleo', e.target.value)} /></label>
-        <label>Demora del proveedor (días)<input type="number" min="0" value={form.lead_time_days} onChange={e => set('lead_time_days', e.target.value)} /></label>
+        <label>Demora del proveedor (días)<input type="number" min="0" value={form.lead_time_days} onChange={e => set('lead_time_days', e.target.value)} />
+          <small className="field-help">Se usa para avisarte cuándo recomprar.</small></label>
       </div>
       <div className="full-width photo-upload">
-        <label>Fotos del material (se guardan con el nombre del material)
-          <input type="file" accept="image/*" multiple onChange={e => set('photoFiles', Array.from(e.target.files || []))} />
+        <label>Fotos del material (JPG, PNG o WebP; se achican solas antes de subirse)
+          <input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={onFiles} />
         </label>
+        {fileMsg && <small className="warn">{fileMsg}</small>}
         {form.photoFiles?.length > 0 && <small className="muted">{form.photoFiles.length} foto(s) para subir: {form.photoFiles.map(f => f.name).join(', ')}</small>}
         {editing && form.photo_urls?.length > 0 && (
           <div className="photo-edit">
             {form.photo_urls.map(u => (
               <span key={u} className="photo-edit-item">
                 <Thumb url={u} alt="" w={120} />
-                <button type="button" title="Quitar esta foto" onClick={() => set('photo_urls', form.photo_urls.filter(x => x !== u))}>×</button>
+                <button type="button" title="Quitar esta foto" aria-label="Quitar esta foto" onClick={() => set('photo_urls', form.photo_urls.filter(x => x !== u))}>×</button>
               </span>
             ))}
             <small className="muted">Las fotos nuevas se suman. Con × quitás una (se aplica al guardar).</small>
@@ -1326,20 +1704,47 @@ function ItemModal({ form, setForm, editing, onClose, onSubmit }) {
     </Modal>
   );
 }
+const itemLabel = (i) => `${i.name}${i.brand && i.brand !== 'Genérico' ? ` · ${i.brand}` : ''}`;
+const itemSearch = (i) => `${i.name} ${i.brand || ''} ${i.sku || ''} ${i.category || ''}`;
 
-function ItemSelect({ items, value, onChange, reserved, label = 'Material *' }) {
-  const [f, setF] = useState('');
-  const t = f.trim().toLowerCase();
-  const shown = items.filter(i => i.id === value || !t || `${i.name} ${i.brand || ''} ${i.sku || ''}`.toLowerCase().includes(t));
-  return <label>{label}<input className="select-filter" value={f} onChange={e => setF(e.target.value)} placeholder="Escribí para filtrar la lista…" /><select required value={value} onChange={e => onChange(e.target.value)}><option value="">{t && shown.length === 0 ? 'Sin resultados' : 'Seleccionar'}</option>{shown.map(i => <option key={i.id} value={i.id}>{i.name}{i.brand && i.brand !== 'Genérico' ? ` · ${i.brand}` : ''} (Rosario: {i.stock_nucleo}{reserved?.[i.id] > 0 ? ` · reservados ${reserved[i.id]}` : ''})</option>)}</select></label>;
+/* Renglones «material + cantidad» con buscador. options: [{ id, label, search, avail?, note? }] */
+function LinesEditor({ lines, onChange, options, rightLabel = 'Disponible', hideZero = true, addLabel = '+ Agregar otro material' }) {
+  const byId = useMemo(() => Object.fromEntries(options.map(o => [o.id, o])), [options]);
+  const set = (i, patch) => onChange(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+  const del = (i) => onChange(lines.length > 1 ? lines.filter((_, j) => j !== i) : lines);
+  return (
+    <>
+      <div className="send-lines">
+        {lines.map((l, i) => {
+          const o = byId[l.item_id];
+          const excl = new Set(lines.filter((_, j) => j !== i).map(x => x.item_id).filter(Boolean));
+          const max = o?.avail != null ? Math.max(o.avail, 0) : undefined;
+          return (
+            <div key={i} className="send-line">
+              {l.locked
+                ? <div className="locked-line"><strong>{o?.label || 'Material'}</strong><small>Ya entregado: no se puede cambiar</small></div>
+                : <MaterialPicker options={options} value={l.item_id} onChange={v => set(i, { item_id: v, qty: 1 })} excludeIds={excl} rightLabel={rightLabel} hideZero={hideZero} required />}
+              <input type="number" min="1" max={max || undefined} disabled={!l.item_id || l.locked} value={l.qty} onChange={e => set(i, { qty: e.target.value })} aria-label="Cantidad" required />
+              <button type="button" className="link-btn danger" onClick={() => del(i)} disabled={lines.length === 1 || l.locked}>Quitar</button>
+              {l.item_id && max != null && !l.locked && <small className="line-hint">Máximo {max}</small>}
+            </div>
+          );
+        })}
+      </div>
+      <button type="button" className="secondary-btn add-line-btn" onClick={() => onChange([...lines, { item_id: '', qty: 1 }])}>{addLabel}</button>
+    </>
+  );
 }
 
-function RestockModal({ restock, setRestock, items, reserved, onClose, onSubmit }) {
+function RestockModal({ restock, setRestock, items, onClose, onSubmit }) {
   const set = (k, v) => setRestock(p => ({ ...p, [k]: v }));
+  const options = useMemo(() => items.map(i => ({ id: i.id, label: itemLabel(i), search: itemSearch(i), avail: i.stock_nucleo || 0, note: i.category })), [items]);
   return (
     <Modal title="Registrar ingreso" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar ingreso">
       <div className="form-grid">
-        <ItemSelect items={items} value={restock.item_id} onChange={v => set('item_id', v)} reserved={reserved} />
+        <label className="full-width">Material *
+          <MaterialPicker options={options} value={restock.item_id} onChange={v => set('item_id', v)} rightLabel="En Rosario" hideZero={false} required />
+        </label>
         <label>Cantidad *<input type="number" min="1" required value={restock.qty} onChange={e => set('qty', e.target.value)} /></label>
         <label>Origen<select value={restock.source} onChange={e => set('source', e.target.value)}><option value="proveedor">Proveedor</option><option value="otro">Otro (aclarar en notas)</option></select></label>
         <label>Costo total en pesos (opcional)<input type="number" min="0" step="0.01" placeholder="Lo que costó toda la compra" value={restock.cost} onChange={e => set('cost', e.target.value)} /></label>
@@ -1349,15 +1754,13 @@ function RestockModal({ restock, setRestock, items, reserved, onClose, onSubmit 
     </Modal>
   );
 }
-
 function WithdrawalModal({ withdrawal, setWithdrawal, items, reserved, onClose, onSubmit }) {
   const set = (k, v) => setWithdrawal(p => ({ ...p, [k]: v }));
   const esIncidencia = withdrawal.reason_type === 'incidencia_cliente';
+  const options = useMemo(() => items.map(i => ({ id: i.id, label: itemLabel(i), search: itemSearch(i), avail: Math.max(0, (i.stock_nucleo || 0) - (reserved?.[i.id] || 0)), note: reserved?.[i.id] > 0 ? `${i.stock_nucleo} en total, ${reserved[i.id]} reservados` : i.category })), [items, reserved]);
   return (
     <Modal title="Registrar retiro" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar retiro">
       <div className="form-grid">
-        <ItemSelect items={items} value={withdrawal.item_id} onChange={v => set('item_id', v)} reserved={reserved} />
-        <label>Cantidad *<input type="number" min="1" required value={withdrawal.qty} onChange={e => set('qty', e.target.value)} /></label>
         <label>Motivo<select value={withdrawal.reason_type} onChange={e => set('reason_type', e.target.value)}>{REASONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         {esIncidencia && <>
           <label>Apellido cliente *<input required value={withdrawal.recipient_last_name} onChange={e => set('recipient_last_name', e.target.value)} /></label>
@@ -1365,131 +1768,119 @@ function WithdrawalModal({ withdrawal, setWithdrawal, items, reserved, onClose, 
         </>}
         <label className="full-width">Descripción *<input required value={withdrawal.reason_detail} onChange={e => set('reason_detail', e.target.value)} placeholder={esIncidencia ? 'Motivo de la incidencia' : 'Descripción del retiro'} /></label>
       </div>
+      <h3 className="sub">Materiales del retiro</h3>
+      <LinesEditor lines={withdrawal.lines} onChange={lines => set('lines', lines)} options={options} />
+      <p className="muted small">Podés retirar varios materiales juntos con el mismo motivo. Lo reservado para eventos no se puede retirar. Si falta stock en alguno, no se registra ninguno.</p>
     </Modal>
   );
 }
-
-function SendModal({ modal, setModal, items, destinations, destStock, reserved, onClose, onSubmit }) {
+function SendModal({ modal, setModal, items, destinations, destStock, reserved, isStaff, ownDestId, onClose, onSubmit }) {
   const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
-  const setLine = (i, k, v) => setModal(p => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, [k]: v } : l)) }));
-  const addLine = () => setModal(p => ({ ...p, lines: [...p.lines, { item_id: '', qty: 1 }] }));
-  const delLine = (i) => setModal(p => ({ ...p, lines: p.lines.length > 1 ? p.lines.filter((_, j) => j !== i) : p.lines }));
-  const origins = destinations.filter(d => d.supplies_dealers);
+  const [allMats, setAllMats] = useState(false);
+  const live = destinations.filter(d => d.active !== false);
+  const origins = live.filter(d => d.supplies_dealers && (isStaff || d.id === ownDestId));
   const origin = origins.find(d => d.id === modal.origin_id);
-  const avail = (it) => Math.max(0, (it.stock_nucleo || 0) - (reserved?.[it.id] || 0));
-  const pool = (origin
-    ? destStock.filter(r => r.destination_id === origin.id && r.qty > 0).map(r => ({ it: items.find(x => x.id === r.item_id), max: r.qty }))
-    : items.map(it => ({ it, max: avail(it) })).filter(x => x.max > 0)
-  ).filter(x => x.it).sort((x, y) => x.it.name.localeCompare(y.it.name));
-  const destOptions = origin ? destinations.filter(d => !d.is_depot && d.id !== origin.id) : destinations;
-  const used = new Set(modal.lines.map(l => l.item_id));
-  const [mf, setMf] = useState('');
-  const mt = mf.trim().toLowerCase();
+  const originKey = modal.origin_id || '';
+  const supplied = (d) => (d.supplied_by_id || '') === originKey;
+  const pickable = live.filter(d => d.id !== modal.origin_id);
+  const depots = !origin ? pickable.filter(d => d.is_depot && supplied(d)) : [];
+  const dealers = pickable.filter(d => !d.is_depot && supplied(d));
+  const regular = new Set([...depots, ...dealers].map(d => d.id));
+  const others = modal.exceptional && isStaff ? pickable.filter(d => !regular.has(d.id) && (!origin || !d.is_depot)) : [];
   const chosenDest = destinations.find(d => d.id === modal.destination_id);
+  const marcas = chosenDest?.marcas || [];
+  const inScope = (it) => !marcas.length || it.brand === 'Genérico' || it.brand === 'Neostar' || marcas.includes(it.brand);
+  const base = useMemo(() => (origin
+    ? destStock.filter(r => r.destination_id === origin.id && r.qty > 0).map(r => ({ it: items.find(x => x.id === r.item_id), max: r.qty }))
+    : items.map(it => ({ it, max: Math.max(0, (it.stock_nucleo || 0) - (reserved?.[it.id] || 0)) }))
+  ).filter(x => x.it), [origin, destStock, items, reserved]);
+  const chosen = new Set(modal.lines.map(l => l.item_id).filter(Boolean));
+  const options = base
+    .filter(x => allMats || inScope(x.it) || chosen.has(x.it.id))
+    .map(({ it, max }) => ({ id: it.id, label: itemLabel(it), search: itemSearch(it), avail: max, note: !origin && reserved?.[it.id] > 0 ? `${it.stock_nucleo} en total, ${reserved[it.id]} reservados` : it.category }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const changeOrigin = (v) => { setAllMats(false); setModal(p => ({ ...p, origin_id: v, destination_id: '', exceptional: false, exception_reason: '', lines: [{ item_id: '', qty: 1 }] })); };
+  const toggleExceptional = (c) => setModal(p => ({ ...p, exceptional: c, exception_reason: c ? p.exception_reason : '', destination_id: !c && !regular.has(p.destination_id) ? '' : p.destination_id }));
+  const originName = origin ? origin.name : ROSARIO;
   return (
     <Modal title="Enviar materiales" onClose={onClose} onSubmit={onSubmit} submitLabel="Registrar envío">
       <div className="form-grid">
-        {origins.length > 0 && (
+        {(origins.length > 0 || !isStaff) && (
           <label>Sale desde *
-            <select value={modal.origin_id} onChange={e => setModal(p => ({ ...p, origin_id: e.target.value, destination_id: '', lines: [{ item_id: '', qty: 1 }] }))}>
-              <option value="">DEPOSITO MARKETING ROSARIO</option>
+            <select value={modal.origin_id} disabled={!isStaff && origins.length <= 1} onChange={e => changeOrigin(e.target.value)}>
+              {isStaff && <option value="">{ROSARIO}</option>}
               {origins.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </label>
         )}
-        <label>Destino *<select required value={modal.destination_id} onChange={e => set('destination_id', e.target.value)}><option value="">Seleccionar</option>{destOptions.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+        <label>Destino *
+          <select required value={modal.destination_id} onChange={e => set('destination_id', e.target.value)}>
+            <option value="">Seleccionar</option>
+            {depots.length > 0 && <optgroup label="Depósitos">{depots.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>}
+            {dealers.length > 0 && <optgroup label="Concesionarios">{dealers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>}
+            {others.length > 0 && <optgroup label="Otros destinos (excepcional)">{others.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>}
+          </select>
+        </label>
         <label>Quién lo recibe<input value={modal.recipient_name} onChange={e => set('recipient_name', e.target.value)} placeholder="Nombre de quién recibe" /></label>
       </div>
+      {isStaff && (
+        <div className="exception-box">
+          <label className="check-inline"><input type="checkbox" checked={Boolean(modal.exceptional)} onChange={e => toggleExceptional(e.target.checked)} /> Envío excepcional (a un destino que no abastece {originName})</label>
+          {modal.exceptional && (
+            <label className="full-width">Motivo del envío excepcional *
+              <input required value={modal.exception_reason || ''} onChange={e => set('exception_reason', e.target.value)} placeholder="Ej: el concesionario se quedó sin stock y Santa Fe no llega a tiempo" />
+            </label>
+          )}
+        </div>
+      )}
       <h3 className="sub">Materiales del envío</h3>
-      <input className="select-filter" value={mf} onChange={e => setMf(e.target.value)} placeholder="Escribí para filtrar los materiales de la lista…" />
-      <div className="send-lines">
-        {modal.lines.map((l, i) => {
-          const cur = pool.find(x => x.it.id === l.item_id);
-          return (
-            <div key={i} className="send-line">
-              <select value={l.item_id} onChange={e => setLine(i, 'item_id', e.target.value)} required>
-                <option value="">Elegir material…</option>
-                {pool.filter(x => x.it.id === l.item_id || (!used.has(x.it.id) && (!mt || `${x.it.name} ${x.it.brand || ''} ${x.it.sku || ''}`.toLowerCase().includes(mt)))).map(({ it, max }) => (
-                  <option key={it.id} value={it.id}>{it.name}{it.brand && it.brand !== 'Genérico' ? ` · ${it.brand}` : ''} (Disponible: {max}{!origin && reserved?.[it.id] > 0 ? ` de ${it.stock_nucleo}, reservados ${reserved[it.id]}` : ''})</option>
-                ))}
-              </select>
-              <input type="number" min="1" max={cur?.max || undefined} value={l.qty} onChange={e => setLine(i, 'qty', e.target.value)} aria-label="Cantidad" required />
-              <button type="button" className="link-btn danger" onClick={() => delLine(i)} disabled={modal.lines.length === 1}>Quitar</button>
-            </div>
-          );
-        })}
-      </div>
-      <button type="button" className="secondary-btn add-line-btn" onClick={addLine}>+ Agregar otro material</button>
+      {marcas.length > 0 && !allMats && <p className="muted small">Mostrando materiales de {marcas.join(', ')}, genéricos y Neostar. <button type="button" className="link-btn" onClick={() => setAllMats(true)}>Mostrar todos los materiales</button></p>}
+      {marcas.length > 0 && allMats && <p className="muted small">Mostrando todos los materiales. <button type="button" className="link-btn" onClick={() => setAllMats(false)}>Mostrar solo los de {marcas.join(', ')}</button></p>}
+      <LinesEditor lines={modal.lines} onChange={lines => set('lines', lines)} options={options} />
       <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
       {chosenDest?.is_depot === false
-        ? <p className="muted small">Concesionario: se descuenta de {origin ? origin.name : 'DEPOSITO MARKETING ROSARIO'} y queda registrado con la fecha de hoy y las cantidades. Es solo un registro: no necesita recepción.</p>
-        : <p className="muted small">Se descuenta del DEPOSITO MARKETING ROSARIO ahora y queda «en camino». Cuando llegue, quien recibe controla cada material (✓ o ✗) y las cantidades se suman a su stock. Lo reservado para eventos no se puede enviar.</p>}
+        ? <p className="muted small">Concesionario: se descuenta de {originName} y queda registrado con la fecha de hoy y las cantidades. Es solo un registro: no necesita recepción.</p>
+        : <p className="muted small">Se descuenta de {originName} ahora y queda «en camino». Cuando llegue, quien recibe controla cada material (✓ o ✗) y las cantidades se suman a su stock.{!origin ? ' Lo reservado para eventos no se puede enviar.' : ''}</p>}
     </Modal>
   );
 }
-
 function EventModal({ modal, setModal, items, availableOf, onClose, onSubmit }) {
   const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
-  const setLine = (i, k, v) => setModal(p => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, [k]: v } : l)) }));
-  const addLine = () => setModal(p => ({ ...p, lines: [...p.lines, { item_id: '', qty: 1 }] }));
-  const delLine = (i) => setModal(p => ({ ...p, lines: p.lines.length > 1 ? p.lines.filter((_, j) => j !== i) : p.lines }));
+  const editing = Boolean(modal.editing);
+  const scoped = (it, brand) => it.brand === brand || it.brand === 'Genérico' || it.brand === 'Neostar';
   const setBrand = (brand) => setModal(p => ({
     ...p, brand,
     lines: p.lines.map(l => {
       const it = items.find(x => x.id === l.item_id);
-      const ok = it && (it.brand === brand || it.brand === 'Genérico' || it.brand === 'Neostar');
-      return ok ? l : { item_id: '', qty: 1 };
+      return l.locked || (it && scoped(it, brand)) ? l : { item_id: '', qty: 1 };
     })
   }));
-  const pool = items.filter(i => modal.brand && (i.brand === modal.brand || i.brand === 'Genérico' || i.brand === 'Neostar'));
-  const used = new Set(modal.lines.map(l => l.item_id));
-  const cats = [...new Set(pool.map(i => i.category))].sort();
-  const avail = (id) => availableOf(id, modal.start_date, modal.end_date);
+  const lockedIds = new Set(modal.lines.filter(l => l.locked).map(l => l.item_id));
+  const pool = items.filter(i => lockedIds.has(i.id) || (modal.brand && scoped(i, modal.brand)));
+  const options = pool.map(i => ({ id: i.id, label: itemLabel(i), search: itemSearch(i), avail: availableOf(i.id, modal.start_date, modal.end_date, modal.editing), note: i.category }));
   return (
-    <Modal title="Nuevo evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar evento">
+    <Modal title={editing ? 'Editar evento' : 'Nuevo evento'} onClose={onClose} onSubmit={onSubmit} submitLabel={editing ? 'Guardar cambios' : 'Guardar evento'}>
       <div className="form-grid">
         <label className="full-width">Nombre del evento *<input required value={modal.event_name} onChange={e => set('event_name', e.target.value)} placeholder="Ej: Activación BYD Rosario" /></label>
         <label>Fecha de inicio *<input type="date" required value={modal.start_date} onChange={e => setModal(p => ({ ...p, start_date: e.target.value, end_date: p.end_date && p.end_date >= e.target.value ? p.end_date : e.target.value }))} /></label>
         <label>Fecha de fin *<input type="date" required min={modal.start_date || undefined} value={modal.end_date} onChange={e => set('end_date', e.target.value)} /></label>
-        <label>Marca *<select required value={modal.brand} onChange={e => setBrand(e.target.value)}><option value="">Seleccionar</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select></label>
+        <label>Marca *<select required disabled={modal.anyDelivered} value={modal.brand} onChange={e => setBrand(e.target.value)}><option value="">Seleccionar</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select>
+          {modal.anyDelivered && <small className="field-help">Ya se entregaron materiales: la marca no se puede cambiar.</small>}</label>
         <label>Responsable (opcional)<input value={modal.carried_by} onChange={e => set('carried_by', e.target.value)} placeholder="Quién se lleva los elementos" /></label>
       </div>
       <h3 className="sub">Elementos a llevar</h3>
-      {!modal.brand && <p className="muted small">Elegí la marca y te muestro los elementos de esa marca y los genéricos.</p>}
+      {!modal.brand && <p className="muted small">Elegí la marca y te muestro los elementos de esa marca, los genéricos y los de Neostar.</p>}
       {modal.brand && (
         <>
-          <div className="send-lines">
-            {modal.lines.map((l, i) => {
-              const max = l.item_id ? avail(l.item_id) : undefined;
-              return (
-                <div key={i} className="send-line">
-                  <select value={l.item_id} onChange={e => setLine(i, 'item_id', e.target.value)} required>
-                    <option value="">Elegir elemento…</option>
-                    {cats.map(c => (
-                      <optgroup key={c} label={c}>
-                        {pool.filter(x => x.category === c && (x.id === l.item_id || !used.has(x.id))).map(x => {
-                          const a = avail(x.id);
-                          return <option key={x.id} value={x.id} disabled={a <= 0 && x.id !== l.item_id}>{x.name}{x.brand && x.brand !== 'Genérico' ? ` · ${x.brand}` : ''} (disponibles: {a})</option>;
-                        })}
-                      </optgroup>
-                    ))}
-                  </select>
-                  <input type="number" min="1" max={max || undefined} disabled={!l.item_id} value={l.qty} onChange={e => setLine(i, 'qty', e.target.value)} aria-label="Cantidad" required />
-                  <button type="button" className="link-btn danger" onClick={() => delLine(i)} disabled={modal.lines.length === 1}>Quitar</button>
-                  {l.item_id && <small className="line-hint">Máximo {max}{modal.start_date ? ' para esas fechas' : ''}</small>}
-                </div>
-              );
-            })}
-          </div>
-          <button type="button" className="secondary-btn add-line-btn" onClick={addLine}>+ Agregar otro elemento</button>
+          <LinesEditor lines={modal.lines} onChange={lines => set('lines', lines)} options={options} rightLabel="Disponibles" addLabel="+ Agregar otro elemento" />
+          <p className="muted small">El máximo de cada elemento toma en cuenta lo reservado por otros eventos que se pisan en fechas{editing ? ' (este evento no se cuenta contra sí mismo)' : ''}.</p>
         </>
       )}
       <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
-      <p className="muted small">Guardar reserva los elementos para esas fechas: nadie más puede usarlos en otro evento que se pise. El stock sale del DEPOSITO MARKETING ROSARIO recién cuando tocás «Entregar materiales».</p>
+      <p className="muted small">{editing ? 'Lo que ya se entregó queda bloqueado; podés cambiar fechas, responsable, notas y lo que todavía está solo reservado.' : 'Guardar reserva los elementos para esas fechas: nadie más puede usarlos en otro evento que se pise. El stock sale del DEPOSITO MARKETING ROSARIO recién cuando tocás «Entregar materiales».'}</p>
     </Modal>
   );
 }
-
 function WithdrawEventModal({ modal, setModal, onClose, onSubmit }) {
   return (
     <Modal title="Entregar materiales del evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Entregar y descontar stock">
@@ -1554,6 +1945,7 @@ function retiroHtml(event, rows) {
 }
 
 function RetiroView({ event, lines, itemById, onClose }) {
+  useScrollLock();
   const rows = lines.map(l => ({ name: l.items?.name || itemById[l.item_id]?.name, brand: itemById[l.item_id]?.brand || '', qty: l.qty_allocated }));
   const html = retiroHtml(event, rows);
   const [msg, setMsg] = useState('');
@@ -1634,7 +2026,8 @@ function ResolveModal({ modal, setModal, onClose, onSubmit }) {
       <div className="check-lines">
         {modal.lines.map((l, i) => {
           const used = l.rows.reduce((a, r) => a + (Number(r.qty) || 0), 0);
-          const opts = l.diff_reason === 'de_mas' ? RES_SOBRANTE : RES_OPTIONS;
+          const org = sh.origin_name || ROSARIO;
+          const opts = l.diff_reason === 'de_mas' ? resSobrante(org) : resOptions(org);
           return (
             <div key={l.movement_id} className="check-line is-bad">
               <div className="check-name"><strong>{l.name}</strong><small>Enviado {l.qty} · {DIFF_LABEL[l.diff_reason]} · {l.pending} sin explicar{used !== l.pending ? ` (asignadas ${used})` : ''}</small></div>
@@ -1656,7 +2049,7 @@ function ResolveModal({ modal, setModal, onClose, onSubmit }) {
           );
         })}
       </div>
-      <p className="warn small">Lo que no explíques ahora sigue como diferencia pendiente. Si el destino no tiene stock suficiente en Rosario para un sobrante, ajustá ese stock primero.</p>
+      <p className="warn small">Lo que no explíques ahora sigue como diferencia pendiente. Si {sh.origin_name || ROSARIO} no tiene stock suficiente para descontar un sobrante, ajustá ese stock primero.</p>
     </Modal>
   );
 }
@@ -1680,12 +2073,15 @@ function PointWithdrawModal({ modal, setModal, onClose, onSubmit }) {
   );
 }
 
-function PointStockInModal({ modal, setModal, items, onClose, onSubmit }) {
+function PointStockInModal({ modal, setModal, items, qtyOf, onClose, onSubmit }) {
   const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
+  const options = useMemo(() => items.map(i => ({ id: i.id, label: itemLabel(i), search: itemSearch(i), avail: qtyOf ? qtyOf(i.id) : undefined, note: i.category })),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [items, modal.destination_id]);
   return (
     <Modal title="Cargar stock en este depósito" onClose={onClose} onSubmit={onSubmit} submitLabel="Cargar">
       <div className="form-grid">
-        <label>Material *<select required value={modal.item_id} onChange={e => set('item_id', e.target.value)}><option value="">Seleccionar</option>{items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
+        <label className="full-width">Material *<MaterialPicker options={options} value={modal.item_id} onChange={v => set('item_id', v)} rightLabel="Hay ahora" hideZero={false} required /></label>
         <label>Cantidad *<input type="number" min="1" required value={modal.qty} onChange={e => set('qty', e.target.value)} /></label>
         <label className="full-width">Motivo *<input required value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Ej: stock inicial contado, compra propia del depósito" /></label>
       </div>
@@ -1693,7 +2089,6 @@ function PointStockInModal({ modal, setModal, items, onClose, onSubmit }) {
     </Modal>
   );
 }
-
 function PointMinModal({ modal, setModal, onClose, onSubmit }) {
   return (
     <Modal title="Punto de restock" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar">
@@ -1706,15 +2101,18 @@ function PointMinModal({ modal, setModal, onClose, onSubmit }) {
   );
 }
 
-function AdjustModal({ modal, setModal, onClose, onSubmit }) {
-  const set = (k, v) => setModal(p => ({ ...p, [k]: v }));
+function AdjustModal({ modal, setModal, willReview, onClose, onSubmit }) {
+  const set = (k, v) => setModal(p => ({ ...p, [k]: v, ...(k === 'new_qty' ? { confirmLow: false } : {}) }));
   return (
-    <Modal title="Ajustar stock" onClose={onClose} onSubmit={onSubmit} submitLabel="Registrar ajuste">
-      <p><strong>{modal.name}</strong> · {modal.place} · stock actual: {modal.current}</p>
+    <Modal title="Ajustar stock" onClose={onClose} onSubmit={onSubmit} submitLabel={modal.confirmLow ? 'Sí, confirmar el ajuste' : 'Registrar ajuste'}>
+      <p><strong>{modal.name}</strong> · {modal.place}</p>
+      <p className="adjust-facts">Stock actual: <strong>{modal.current}</strong>{modal.isRosario && <> · Reservado para eventos: <strong>{modal.reserved || 0}</strong></>}</p>
       <div className="form-grid">
         <label>Stock real contado *<input type="number" min="0" required value={modal.new_qty} onChange={e => set('new_qty', e.target.value)} /></label>
         <label>Motivo *<input required value={modal.reason} onChange={e => set('reason', e.target.value)} placeholder="Ej: conteo físico, rotura, error de carga" /></label>
       </div>
+      {modal.confirmLow && <p className="warn small" role="alert">Estás dejando el stock en {modal.new_qty}, por debajo de lo reservado para eventos ({modal.reserved}). Los eventos abiertos no van a poder entregar todo lo reservado. Si es correcto, tocá «Sí, confirmar el ajuste».</p>}
+      {willReview && !modal.isRosario && <p className="muted small">Marketing va a revisar este ajuste.</p>}
       <p className="muted small">Queda registrado quién lo hizo, cuándo y de cuánto a cuánto.</p>
     </Modal>
   );
