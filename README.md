@@ -8,15 +8,22 @@ Stack: React + Vite + Supabase (base de datos, usuarios, fotos). Se publica en V
 
 ## Qué hace
 
-- **Materiales:** catálogo con categorías (tabla `categories`), marcas, fotos y stock en DEPOSITO MARKETING ROSARIO.
-- **Ingresos / Retiros:** entradas por compra y salidas (regalos, incidencias, uso interno). Un retiro puede llevar varios materiales.
+- **Materiales:** catálogo con categorías (tabla `categories`), marcas, fotos y stock en Depósito Rosario. Tocar el nombre abre la **ficha** del material (stock en cada depósito, reservado para eventos, últimos movimientos). Las marcas de un mismo material quedan agrupadas. No deja crear dos materiales con el mismo nombre y marca.
+- **Ingresos / Retiros:** entradas por compra y salidas (regalos, incidencias, uso interno). Ambos pueden llevar varios materiales; el motivo del retiro hay que elegirlo.
+- **Conteo físico:** se cuenta un depósito entero y se guarda junto con un solo motivo; solo quedan registradas las diferencias (sirve también para la carga definitiva).
+- **Importar planilla:** crea materiales y carga stock inicial desde un CSV (plantilla descargable). Solo crea: lo que ya existe no se pisa.
 - **Envíos:** cada destino tiene un abastecedor (`destinations.supplied_by_id`; vacío = Rosario). Un envío fuera de esa regla es un
   *envío excepcional*: solo Marketing, con motivo obligatorio.
-- **En camino / recepción:** el depósito destino controla cada material (✓ / ✗); las diferencias se resuelven contra el depósito de origen real.
-- **Depósitos y puntos:** stock por depósito (consumibles y equipamiento en préstamo) y registro de lo enviado a concesionarios.
-- **Eventos:** reservan materiales por fechas; se pueden editar mientras estén abiertos; el regreso se registra en una sola operación.
+- **Pendientes de recibir:** es un filtro dentro de Envíos (y «Por recibir» para los depósitos): el depósito destino controla cada material (✓ / ✗); las diferencias se resuelven contra el depósito de origen real.
+- **Depósitos y puntos:** stock por depósito (consumibles y equipamiento en préstamo) y registro de lo enviado a concesionarios. «Vista general»: una tarjeta por lugar y una tabla materiales × depósitos.
+- **Dashboard:** las alertas se pueden accionar (Registrar compra / Enviar desde Rosario). El punto de recompra de Rosario usa el mínimo cargado o, si es mayor, el que sale del consumo de los últimos 90 días.
+- **Eventos:** reservan materiales por fechas; se pueden editar mientras estén abiertos y duplicar para otras fechas; el regreso se registra en una sola operación.
 - **Historial:** todo con fecha y responsable, con filtros y exportación a Excel (CSV).
 - **Usuarios:** solo el Dueño cambia roles y depósitos.
+
+## Menú
+
+Operar (Ingresos, Retiros, Envíos, Eventos) · Consultar (Materiales, Depósitos y puntos, Historial) · Administrar (Usuarios). El botón **+ Nuevo** (arriba a la derecha) registra cualquier movimiento desde cualquier pantalla.
 
 ## Roles
 
@@ -31,7 +38,7 @@ Hay un único **Dueño** (`profiles.is_owner`), siempre administrador; solo se t
 
 ## Base de datos
 
-- `supabase/migrations/001…017`: historial de cambios, en orden.
+- `supabase/migrations/001…019`: historial de cambios, en orden (018 y 019: ronda 3, auditoría de uso).
 - `supabase/manual/A_pegar_antes_de_mergear.sql`: pasos con `DROP`/`DELETE` que se pegan a mano en el SQL Editor **antes** de mergear la ronda 2.
 - `supabase/manual/B_pegar_despues_de_mergear.sql`: limpieza y endurecimiento (fotos, funciones y columnas viejas, políticas), **después** de mergear.
 - `supabase/schema-complete.sql` es el esquema original; el estado real de producción es el resultado de aplicar las migraciones.

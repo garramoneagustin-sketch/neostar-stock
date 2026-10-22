@@ -15,7 +15,7 @@ export function useScrollLock() {
   }, []);
 }
 
-export function Modal({ title, onClose, onSubmit, submitLabel, children }) {
+export function Modal({ title, onClose, onSubmit, submitLabel, children, wide = false, extraActions = null, hideSubmit = false, cancelLabel = 'Cancelar' }) {
   const { busy, error } = useContext(UiCtx);
   const formRef = useRef(null);
   const errRef = useRef(null);
@@ -28,13 +28,14 @@ export function Modal({ title, onClose, onSubmit, submitLabel, children }) {
   const submit = (e) => { if (busy) { e.preventDefault(); return; } onSubmit(e); };
   return (
     <div className="modal-overlay">
-      <form className="modal" onSubmit={submit} ref={formRef}>
+      <form className={`modal${wide ? ' modal-wide' : ''}`} onSubmit={submit} ref={formRef}>
         <div className="card-head"><h2>{title}</h2><button type="button" className="close-btn" onClick={onClose} aria-label="Cerrar">×</button></div>
         {error && <div className="error-banner modal-error" role="alert" ref={errRef}>{error}</div>}
         {children}
         <div className="modal-actions">
-          <button type="button" className="secondary-btn" onClick={onClose}>Cancelar</button>
-          <button type="submit" className="primary-btn" disabled={busy}>{busy ? 'Guardando…' : submitLabel}</button>
+          <button type="button" className="secondary-btn" onClick={onClose}>{cancelLabel}</button>
+          {extraActions}
+          {!hideSubmit && <button type="submit" className="primary-btn" disabled={busy}>{busy ? 'Guardando…' : submitLabel}</button>}
         </div>
       </form>
     </div>
@@ -43,7 +44,7 @@ export function Modal({ title, onClose, onSubmit, submitLabel, children }) {
 
 /* Selector único de material: un solo campo con búsqueda (nombre, SKU o marca, sin importar acentos ni mayúsculas),
    manejable con teclado (↑ ↓ Enter Esc). options: [{ id, label, search, avail?, note? }] */
-export function MaterialPicker({ options, value, onChange, excludeIds, rightLabel = 'Disponible', hideZero = true, required = false, placeholder = 'Buscar por nombre, SKU o marca…', ariaLabel = 'Material' }) {
+export function MaterialPicker({ options, value, onChange, excludeIds, rightLabel = 'Disponible', hideZero = true, required = false, placeholder = 'Buscar por nombre o marca…', ariaLabel = 'Material' }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [hi, setHi] = useState(0);
@@ -161,4 +162,28 @@ export function downloadCsv(filename, header, rows) {
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/* Lee un CSV exportado desde Excel (separador «;» o «,», comillas, UTF-8 con o sin BOM). Devuelve filas de celdas. */
+export function parseCsv(text) {
+  const t = String(text || '').replace(/^\uFEFF/, '');
+  const firstLine = t.split(/\r?\n/).find(l => l.trim() !== '') || '';
+  const delim = (firstLine.match(/;/g) || []).length >= (firstLine.match(/,/g) || []).length ? ';' : ',';
+  const rows = []; let row = []; let cell = ''; let q = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) {
+      if (c === '"') { if (t[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === delim) { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && t[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.some(x => x.trim() !== '')) rows.push(row);
+      row = [];
+    } else cell += c;
+  }
+  row.push(cell);
+  if (row.some(x => x.trim() !== '')) rows.push(row);
+  return rows.map(r => r.map(x => x.trim()));
 }

@@ -79,3 +79,76 @@ button.notice-banner { font: inherit; text-align: left; width: 100%; display: bl
 @media (prefers-reduced-motion: reduce) {
   .modal, .modal-overlay { animation: none !important; }
 }
+
+/* ================= Ronda 3 (auditoría de uso) ================= */
+
+/* ----- Menú ordenado por tarea ----- */
+.nav-section { margin: 14px 0 4px; padding: 0 14px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .72; font-weight: 700; }
+.nav-rail .nav-section { padding: 0; margin: 10px 8px 2px; height: 1px; background: rgba(255,255,255,.28); }
+.nav-rail .nav-section span { display: none; }
+
+/* ----- Botón + Nuevo ----- */
+.topbar-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.new-menu-btn { font: inherit; cursor: pointer; }
+.row-menu .menu-list.menu-left { right: auto; left: 0; }
+.menu-list button[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* ----- Selector segmentado (Todos / Pendientes, Un depósito / Vista general) ----- */
+.seg { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px; border: 2px solid var(--ink, #12183a); border-radius: 14px; background: #fff; margin-bottom: 4px; }
+.seg button { border: 0; background: transparent; font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 10px; cursor: pointer; }
+.seg button:hover { background: #eef1ff; }
+.seg button.on { background: var(--ink, #12183a); color: #fff; }
+.seg button:focus-visible { outline: 3px solid var(--blue, #3d5afe); outline-offset: 2px; }
+.inline-label { margin-top: 10px; }
+
+/* ----- Encabezados con acciones ----- */
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.name-link { border: 0; background: transparent; padding: 0; font: inherit; text-align: left; cursor: pointer; color: inherit; text-decoration: underline; text-decoration-color: rgba(18,24,58,.3); text-underline-offset: 3px; }
+.name-link:hover { text-decoration-color: currentColor; }
+.name-link:focus-visible { outline: 3px solid var(--blue, #3d5afe); outline-offset: 2px; }
+tr.group-row td { background: #eef1ff; border-top: 2px solid var(--line, #dde2f5); font-size: 14px; }
+.dupes-box { margin: 10px 0 14px; padding: 10px 14px; border: 2px dashed #e0a100; background: #fff8e6; border-radius: 12px; }
+.dupes-box summary { cursor: pointer; font-weight: 700; }
+.dupes-box ul { margin: 8px 0 0; padding-left: 20px; }
+
+/* ----- Ventanas anchas (conteo, importación, ficha) ----- */
+.modal.modal-wide { width: min(940px, 100%); }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.count-tools { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin: 12px 0 8px; }
+.count-table { width: 100%; border-collapse: collapse; }
+.count-table th, .count-table td { padding: 6px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--line, #dde2f5); }
+.count-table td small { display: block; color: #5b6478; font-size: 12px; }
+.count-table input[type=number] { width: 100px; }
+.count-table tr.row-bad td { background: #ffecec; }
+.ok { color: #14602b; font-weight: 600; }
+.import-steps { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 8px; }
+.danger-btn, .secondary-btn.danger-btn { color: #a11b1b; border-color: #a11b1b; background: #fff; }
+
+/* ----- Ficha del material ----- */
+.sheet-photos { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 10px; }
+.sheet-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 10px 0 6px; }
+.sheet-tiles > div { border: 2px solid var(--ink, #12183a); border-radius: 14px; padding: 10px 12px; background: #fff; display: grid; gap: 2px; }
+.sheet-tiles strong { font-size: 28px; line-height: 1; }
+.sheet-tiles span { color: #4a5380; font-size: 13px; }
+
+/* ----- Vista general ----- */
+.overview-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; margin-top: 10px; }
+.overview-card { text-align: left; font: inherit; cursor: pointer; display: grid; gap: 4px; padding: 12px 14px; border: 2px solid var(--ink, #12183a); border-radius: 14px; background: #fff; box-shadow: 3px 3px 0 var(--ink, #12183a); }
+.overview-card:hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--ink, #12183a); }
+.overview-card:focus-visible { outline: 3px solid var(--blue, #3d5afe); outline-offset: 2px; }
+.overview-card strong { font-size: 15px; }
+.overview-card small { color: #5b6478; }
+table.matrix { width: 100%; border-collapse: collapse; }
+table.matrix th, table.matrix td { padding: 6px 10px; border-bottom: 1px solid var(--line, #dde2f5); text-align: right; }
+table.matrix th:first-child, table.matrix td:first-child { text-align: left; position: sticky; left: 0; background: #fff; min-width: 190px; }
+table.matrix td small { display: block; color: #5b6478; font-size: 12px; }
+
+/* ----- Línea con costo opcional ----- */
+.send-line.has-cost { grid-template-columns: minmax(0, 1fr) 100px 140px auto; }
+
+@media (max-width: 700px) {
+  .send-line.has-cost { grid-template-columns: 1fr 90px; }
+  .send-line.has-cost input[placeholder^="Costo"] { grid-column: 1 / -1; }
+  .sheet-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .topbar-actions { width: 100%; }
+}

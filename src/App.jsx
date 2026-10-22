@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from './lib/supabase';
-import { UiCtx, Modal, MaterialPicker, useScrollLock, norm, compressImage, downloadCsv } from './ui';
+import { UiCtx, Modal, MaterialPicker, useScrollLock, norm, compressImage, downloadCsv, parseCsv } from './ui';
 import './styles.css';
 import './styles-extra.css';
 import './styles-pro.css';
@@ -79,7 +79,15 @@ const REASONS = [
   ['otro', 'Otro']
 ];
 
-const ROSARIO = 'DEPOSITO MARKETING ROSARIO';
+const ROSARIO = 'Depósito Rosario';
+// En la base los depósitos se llaman «DEPOSITO MARKETING SANTA FE», etc.: en pantalla se muestran como «Depósito Santa Fe»
+const dn = (s) => {
+  const m = /^DEPOSITO MARKETING\s+(.+)$/i.exec(String(s ?? '').trim());
+  return m ? `Depósito ${m[1].toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase())}` : s;
+};
+const dnDest = (d) => ({ ...d, name: dn(d.name) });
+const dnMov = (m) => ({ ...m, origen: dn(m.origen), destination: dn(m.destination) });
+const dnShip = (x) => ({ ...x, origin_name: dn(x.origin_name), destination_name: dn(x.destination_name) });
 // Ningún tipo crudo se muestra: lo desconocido aparece como «Otro movimiento»
 const MOVE_LABELS = {
   stock_inicial: 'Stock inicial',
@@ -125,7 +133,7 @@ const STATE_LABELS = {
 };
 
 const emptyItem = {
-  name: '', sku: '', kind: 'consumible', category: '', brand: 'Genérico',
+  name: '', kind: 'consumible', category: '', brand: 'Genérico',
   occasion: '', stock_nucleo: 0, reorder_nucleo: 0, lead_time_days: 15, photoFiles: []
 };
 const ROLE_LABELS = { admin: 'Administrador', editor: 'Editor', punto: 'Depósito', viewer: 'Solo lectura', none: 'Sin acceso' };
@@ -169,6 +177,7 @@ export default function App() {
   const [shipments, setShipments] = useState([]);
   const [shipLines, setShipLines] = useState([]); // renglones de TODOS los envíos cargados (no dependen del límite de movimientos)
   const [categories, setCategories] = useState([]);
+  const [centralStatus, setCentralStatus] = useState([]); // materiales de Rosario a recomprar (consumo real de 90 días)
   const [reviewAdj, setReviewAdj] = useState([]); // ajustes de depósitos pendientes de revisión
   const [users, setUsers] = useState([]);
   const [events, setEvents] = useState([]);
@@ -184,6 +193,8 @@ export default function App() {
   const [brandFilter, setBrandFilter] = useState('Todas');
   const [photoFilter, setPhotoFilter] = useState(false);
   const [selectedDest, setSelectedDest] = useState('');
+  const [shipFilter, setShipFilter] = useState('todos'); // Envíos: todos | pendientes de recibir
+  const [depView, setDepView] = useState('uno'); // Depósitos y puntos: un depósito | vista general
   const [modal, setModal] = useState(null); // { type, ...datos }
   useEffect(() => {
     if (!modal) return undefined;
@@ -195,8 +206,9 @@ export default function App() {
   useEffect(() => { setError(''); }, [modal?.type]);
   const [form, setForm] = useState(emptyItem);
   const [editingItem, setEditingItem] = useState(null);
-  const [restock, setRestock] = useState({ item_id: '', qty: 1, source: 'proveedor', cost: '', notes: '' });
-  const emptyWithdrawal = () => ({ lines: [{ item_id: '', qty: 1 }], reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' });
+  const emptyRestock = () => ({ lines: [{ item_id: '', qty: 1, cost: '' }], source: 'proveedor', notes: '' });
+  const [restock, setRestock] = useState(emptyRestock);
+  const emptyWithdrawal = () => ({ lines: [{ item_id: '', qty: 1 }], reason_type: '', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' });
   const [withdrawal, setWithdrawal] = useState(emptyWithdrawal);
 
   const role = profile?.role || 'none';
@@ -257,19 +269,20 @@ export default function App() {
     const chunks = [];
     for (let i = 0; i < ids.length; i += 60) chunks.push(ids.slice(i, i + 60));
     const lines = (await Promise.all(chunks.map(c => q(supabase.from('movements').select('*, items(name, brand)').in('shipment_id', c).eq('type', 'envio_destino'))))).flat();
-    setItems(it); setDestinations(ds); setDestStock(dst); setPointStatus(ps); setMovements(mv); setShipments(sh); setCategories(cats); setShipLines(lines);
+    setItems(it); setDestinations(ds.map(dnDest)); setDestStock(dst); setPointStatus(ps.map(p => ({ ...p, destination_name: dn(p.destination_name) }))); setMovements(mv.map(dnMov)); setShipments(sh.map(dnShip)); setCategories(cats); setShipLines(lines.map(dnMov));
 
     if (profile?.role !== 'punto') {
-      const [rs, wd, ev, evi, rsv, rev, us] = await Promise.all([
+      const [rs, wd, ev, evi, rsv, rev, us, cst] = await Promise.all([
         q(supabase.from('restocks').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('withdrawals').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('events').select('*').order('event_date', { ascending: false })),
         q(supabase.from('event_items').select('*, items(name), events(event_name)').order('created_at', { ascending: false })),
         q(supabase.rpc('reserved_by_item')),
         q(supabase.from('movements').select('*, items(name)').eq('needs_review', true).order('created_at', { ascending: false })),
-        profile?.role === 'admin' ? q(supabase.from('profiles').select('*').order('full_name')) : Promise.resolve([])
+        profile?.role === 'admin' ? q(supabase.from('profiles').select('*').order('full_name')) : Promise.resolve([]),
+        q(supabase.from('central_restock_status').select('*').neq('status', 'ok'))
       ]);
-      setRestocks(rs); setWithdrawals(wd); setEvents(ev); setEventItems(evi); setReviewAdj(rev); setUsers(us);
+      setRestocks(rs); setWithdrawals(wd); setEvents(ev); setEventItems(evi); setReviewAdj(rev.map(dnMov)); setUsers(us); setCentralStatus(cst);
       setReserved(Object.fromEntries((rsv || []).map(r => [r.item_id, r.reserved])));
     }
     setError(errs[0] || '');
@@ -362,11 +375,11 @@ export default function App() {
   async function saveItem(e) {
     e.preventDefault();
     if (busy) return;
+    const another = e.nativeEvent?.submitter?.dataset?.another === '1';
     if (!form.name.trim()) { setError('Nombre obligatorio'); return; }
     if (!form.category) { setError('Elegí la categoría del material'); return; }
     const base = {
       name: form.name.trim(),
-      sku: form.sku?.trim() || null,
       category: form.category,
       kind: form.kind,
       brand: form.brand || 'Genérico',
@@ -410,7 +423,16 @@ export default function App() {
           if (u.error) warn = u.error.message; else msg += ` con ${urls.length} foto(s) nueva(s)`;
         }
       }
-      setModal(null); setNotice(warn ? `${msg}. Atención: ${warn}` : msg); setForm(emptyItem); setEditingItem(null); loadData(true);
+      if (another) {
+        // Misma ficha para otra marca: se conserva nombre, tipo, categoría y mínimos; la marca y el stock se vuelven a elegir
+        const used = new Set(items.filter(x => x.name.trim().toLowerCase() === saved.name.trim().toLowerCase()).map(x => x.brand || 'Genérico'));
+        used.add(saved.brand || 'Genérico');
+        const nextBrand = ['Genérico', ...BRANDS].find(b => !used.has(b)) || 'Genérico';
+        setForm({ ...emptyItem, name: saved.name, kind: saved.kind, category: saved.category, brand: nextBrand, occasion: saved.occasion || '', reorder_nucleo: saved.reorder_nucleo || 0, lead_time_days: saved.lead_time_days ?? 15, photoFiles: [] });
+        setEditingItem(null); setNotice(`${warn ? `${msg}. Atención: ${warn}` : msg}. Elegí la marca y el stock de la siguiente.`); loadData(true);
+      } else {
+        setModal(null); setNotice(warn ? `${msg}. Atención: ${warn}` : msg); setForm(emptyItem); setEditingItem(null); loadData(true);
+      }
     } catch (err) {
       setError(friendlyError(err?.message || 'No se pudo guardar el material'));
     } finally { setBusy(false); }
@@ -418,19 +440,75 @@ export default function App() {
 
   function deleteItem(item) {
     setModal({
-      type: 'confirm', title: 'Eliminar material', danger: true, yes: 'Sí, eliminar',
-      text: `¿Seguro que querés eliminar «${item.name}»${item.brand && item.brand !== 'Genérico' ? ` (${item.brand})` : ''}? Si ya tuvo movimientos se archiva (deja de verse pero se conserva el historial). Tiene que estar en 0.`,
+      type: 'confirm', title: 'Eliminar o archivar material', danger: true, yes: 'Sí, continuar',
+      text: `¿Seguro que querés eliminar «${item.name}»${item.brand && item.brand !== 'Genérico' ? ` (${item.brand})` : ''}? Si ya tuvo movimientos no se borra: se archiva (deja de verse pero se conserva todo el historial). Para eso tiene que estar en 0.`,
       onYes: () => run(supabase.rpc('delete_item', { p_item_id: item.id }), (res) => `Material ${res}`)
     });
   }
 
   function saveRestock(e) {
     e.preventDefault();
-    if (!restock.item_id || Number(restock.qty) < 1) { setError('Falta material o cantidad'); return; }
-    run(supabase.rpc('register_restock', {
-      p_item_id: restock.item_id, p_qty: Number(restock.qty), p_source: restock.source,
-      p_cost: restock.cost ? Number(restock.cost) : null, p_notes: restock.notes || null
-    }), 'Ingreso registrado', () => setRestock({ item_id: '', qty: 1, source: 'proveedor', cost: '', notes: '' }));
+    if (busy) return;
+    const lines = restock.lines.filter(l => l.item_id);
+    if (!lines.length) { setError('Elegí al menos un material'); return; }
+    if (lines.some(l => !(Number(l.qty) >= 1))) { setError('Todas las cantidades tienen que ser de 1 o más'); return; }
+    if (lines.some(l => l.cost !== '' && l.cost != null && !(Number(l.cost) >= 0))) { setError('El costo no puede ser negativo'); return; }
+    run(supabase.rpc('register_restocks', {
+      p_lines: lines.map(l => ({ item_id: l.item_id, qty: Number(l.qty), cost: l.cost === '' || l.cost == null ? null : Number(l.cost) })),
+      p_source: restock.source, p_notes: restock.notes?.trim() || null
+    }), lines.length > 1 ? `Ingreso registrado (${lines.length} materiales)` : 'Ingreso registrado', () => setRestock(emptyRestock()));
+  }
+
+  // ----- Conteo físico
+  function openCount(destId = '') {
+    setError(''); setNotice('');
+    setModal({ type: 'count', destination_id: destId, counts: {}, reason: '', q: '', confirmLow: false });
+  }
+  function saveCount(e) {
+    e.preventDefault();
+    if (busy) return;
+    const m = modal;
+    const dest = m.destination_id || '';
+    if (!m.reason?.trim()) { setError('Escribí el motivo del conteo'); return; }
+    const counted = Object.entries(m.counts || {}).filter(([, v]) => v !== '' && v != null);
+    if (counted.some(([, v]) => !/^\d+$/.test(String(v).trim()))) { setError('Las cantidades contadas tienen que ser números enteros (0 o más)'); return; }
+    const sys = (id) => (dest ? (destStock.find(r => r.destination_id === dest && r.item_id === id)?.qty || 0) : (itemById[id]?.stock_nucleo || 0));
+    const diffs = counted.filter(([id, v]) => Number(v) !== sys(id));
+    if (!diffs.length) { setError('No hay diferencias entre lo contado y lo que dice el sistema: no hay nada para registrar.'); return; }
+    if (!dest && !m.confirmLow && diffs.some(([id, v]) => Number(v) < (reserved[id] || 0))) { setError(''); setModal(p => ({ ...p, confirmLow: true })); return; }
+    run(supabase.rpc('register_stock_count', {
+      p_destination_id: dest || null,
+      p_lines: counted.map(([id, v]) => ({ item_id: id, counted: Number(v) })),
+      p_reason: m.reason.trim()
+    }), (r) => `Conteo registrado: ${r?.adjusted ?? diffs.length} ajuste(s)${r?.unchanged ? ` y ${r.unchanged} material(es) sin diferencia` : ''}.${isPunto ? ' Marketing los va a revisar.' : ''}`);
+  }
+
+  // ----- Importar materiales desde planilla
+  function saveImport(rows) {
+    if (busy) return;
+    run(supabase.rpc('import_materials', { p_rows: rows }), (r) => {
+      const sk = r?.skipped || [];
+      return `Importación lista: ${r?.created ?? 0} material(es) nuevo(s) y ${r?.loaded ?? 0} carga(s) de stock.${sk.length ? ` Se omitieron ${sk.length}: ${sk.slice(0, 4).map(x => `${x.name} (${x.reason})`).join('; ')}${sk.length > 4 ? '…' : ''}` : ''}`;
+    });
+  }
+
+  // ----- Atajos desde las alertas del Dashboard
+  function buyFor(a) {
+    setError(''); setNotice('');
+    setRestock({ lines: [{ item_id: a.item_id, qty: Math.max(1, a.suggested_qty || 1), cost: '' }], source: 'proveedor', notes: '' });
+    setModal({ type: 'restock' });
+  }
+  function sendFor(p) {
+    const it = itemById[p.item_id];
+    const avail = Math.max(0, (it?.stock_nucleo || 0) - (reserved[p.item_id] || 0));
+    setError(''); setNotice('');
+    setModal({ type: 'send', origin_id: '', destination_id: p.destination_id, exceptional: false, exception_reason: '', recipient_name: '', notes: '', lines: [{ item_id: p.item_id, qty: Math.max(1, Math.min(p.suggested_qty || 1, avail || 1)) }] });
+  }
+
+  function duplicateEvent(ev) {
+    const lines = eventItems.filter(ei => ei.event_id === ev.id).map(ei => ({ item_id: ei.item_id, qty: ei.qty_allocated }));
+    setError(''); setNotice('');
+    setModal({ ...emptyEvent(), event_name: ev.event_name || '', brand: ev.brand || '', carried_by: ev.carried_by || '', notes: ev.notes || '', lines: lines.length ? lines : [{ item_id: '', qty: 1 }], duplicatedFrom: ev.event_name });
   }
 
   function saveWithdrawal(e) {
@@ -439,6 +517,7 @@ export default function App() {
     const w = withdrawal;
     const lines = w.lines.filter(l => l.item_id);
     if (!lines.length) { setError('Elegí al menos un material'); return; }
+    if (!w.reason_type) { setError('Elegí el motivo del retiro'); return; }
     if (lines.some(l => !(Number(l.qty) >= 1))) { setError('Todas las cantidades tienen que ser de 1 o más'); return; }
     if (!w.reason_detail.trim()) { setError('Falta la descripción del retiro'); return; }
     run(supabase.rpc('register_withdrawals', {
@@ -543,6 +622,7 @@ export default function App() {
   function savePointWithdrawal(e) {
     e.preventDefault();
     const w = modal;
+    if (!w.reason_type) { setError('Elegí el motivo de la entrega'); return; }
     if (Number(w.qty) < 1 || !w.reason_detail?.trim()) { setError('Falta información'); return; }
     run(supabase.rpc('register_point_withdrawal', {
       p_destination_id: w.destination_id, p_item_id: w.item_id, p_qty: Number(w.qty), p_reason_type: w.reason_type,
@@ -565,7 +645,7 @@ export default function App() {
     const r = modal;
     if (Number(r.qty) < 1 || Number(r.qty) > r.available) { setError(`La cantidad tiene que estar entre 1 y ${r.available}`); return; }
     run(supabase.rpc('register_return', { p_destination_id: r.destination_id, p_item_id: r.item_id, p_qty: Number(r.qty), p_notes: r.notes?.trim() || null }),
-      'Devolución registrada: se descontó de ' + r.place + ' y volvió a DEPOSITO MARKETING ROSARIO');
+      'Devolución registrada: se descontó de ' + r.place + ' y volvió a Depósito Rosario');
   }
 
   function saveMin(e) {
@@ -601,7 +681,7 @@ export default function App() {
     });
   }
 
-  // Disponible = stock del DEPOSITO MARKETING ROSARIO - reservado por otros eventos abiertos que se pisan en fechas
+  // Disponible = stock del Depósito Rosario - reservado por otros eventos abiertos que se pisan en fechas
   function availableOf(itemId, start, end, excludeEventId) {
     const it = itemById[itemId];
     if (!it) return 0;
@@ -642,7 +722,7 @@ export default function App() {
     e.preventDefault();
     if (!modal.by.trim()) { setError('Indicá quién retira los materiales'); return; }
     run(supabase.rpc('withdraw_event', { p_event_id: modal.event.id, p_withdrawn_by: modal.by.trim() }),
-      'Materiales entregados: ya salieron del DEPOSITO MARKETING ROSARIO. Podés imprimir el retiro para firmar.');
+      'Materiales entregados: ya salieron del Depósito Rosario. Podés imprimir el retiro para firmar.');
   }
 
   function saveReturnEvent(e) {
@@ -654,7 +734,7 @@ export default function App() {
       p_event_id: m.event.id,
       p_returns: m.lines.map(l => ({ event_item_id: l.id, qty_returned: Number(l.qty_returned) })),
       p_signed_by: m.by?.trim() || null
-    }), 'Regreso registrado. Lo devuelto volvió al DEPOSITO MARKETING ROSARIO.');
+    }), 'Regreso registrado. Lo devuelto volvió al Depósito Rosario.');
   }
 
   function cancelEvent(ev) {
@@ -686,9 +766,7 @@ export default function App() {
   const inTransit = useMemo(() => shipments.filter(x => x.status === 'en_transito' || x.status === 'parcial'), [shipments]);
   const diffShipments = useMemo(() => shipments.filter(x => x.status === 'con_diferencia'), [shipments]);
 
-  const centralAlerts = useMemo(() =>
-    items.filter(x => x.kind === 'consumible' && Number(x.reorder_nucleo) > 0 && Number(x.stock_nucleo) <= Number(x.reorder_nucleo)),
-  [items]);
+  const centralAlerts = centralStatus;
 
   // Último envío por destino y material (seguimiento de lo enviado a concesionarios)
   const lastSent = useMemo(() => {
@@ -715,27 +793,27 @@ export default function App() {
 
   const history = useMemo(() => {
     const rows = [];
-    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a ' + ROSARIO, item: r.items?.name, brand: '', place: ROSARIO, qty: r.qty, detalle: [SOURCE_LABELS[r.source] || r.source, r.cost ? fmtMoney(r.cost) : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
-    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: MOVE_LABELS.retiro, item: w.items?.name, brand: '', place: ROSARIO, qty: w.qty, detalle: [reasonLabel(w.reason_type), w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
+    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a ' + ROSARIO, item_id: r.item_id, item: r.items?.name, brand: '', place: ROSARIO, qty: r.qty, detalle: [SOURCE_LABELS[r.source] || r.source, r.cost ? fmtMoney(r.cost) : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
+    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: MOVE_LABELS.retiro, item_id: w.item_id, item: w.items?.name, brand: '', place: ROSARIO, qty: w.qty, detalle: [reasonLabel(w.reason_type), w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
     movements.forEach(m => {
       const base = { brand: m.items?.brand || '', place: m.origen || '', placeId: m.origen_id || m.destino_id || null, destId: m.destino_id || null, originId: m.origen_id || null, destName: m.destination || destById[m.destino_id]?.name || '' };
       if (m.type === 'stock_inicial' || m.type === 'compra') {
-        rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type], item: m.items?.name, qty: m.qty, detalle: m.notes || '', quien: m.person, ...base, place: ROSARIO });
+        rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type], item_id: m.item_id, item: m.items?.name, qty: m.qty, detalle: m.notes || '', quien: m.person, ...base, place: ROSARIO });
         return;
       }
       let detalle = '';
-      if (m.type === 'envio_destino') detalle = `${m.origen && m.origen !== 'DEPOSITO MARKETING ROSARIO' && m.origen !== 'Depo Central' ? m.origen + ' ' : ''}→ ${m.destination || destById[m.destino_id]?.name || ''} · ${STATE_LABELS[m.estado] || m.estado}${m.recipient_name ? ' · recibe ' + m.recipient_name : ''}${m.received_by_name ? ' · recibió ' + m.received_by_name : ''}${m.reception_ok === false ? ' · ✗ ' + (DIFF_LABEL[m.diff_reason] || 'diferencia') + (m.diff_reason === 'de_mas' ? '' : ' · llegó ' + (m.qty_received ?? 0)) + (m.reception_note ? ' (' + m.reception_note + ')' : '') : ''}`;
+      if (m.type === 'envio_destino') detalle = `${m.origen && m.origen !== 'Depósito Rosario' && m.origen !== 'Depo Central' ? m.origen + ' ' : ''}→ ${m.destination || destById[m.destino_id]?.name || ''} · ${STATE_LABELS[m.estado] || m.estado}${m.recipient_name ? ' · recibe ' + m.recipient_name : ''}${m.received_by_name ? ' · recibió ' + m.received_by_name : ''}${m.reception_ok === false ? ' · ✗ ' + (DIFF_LABEL[m.diff_reason] || 'diferencia') + (m.diff_reason === 'de_mas' ? '' : ' · llegó ' + (m.qty_received ?? 0)) + (m.reception_note ? ' (' + m.reception_note + ')' : '') : ''}`;
       else if (m.type === 'resolucion_diferencia') detalle = `→ ${m.destination || ''} · ${RES_LABEL[m.reason_type] || m.reason_type}${m.reason_detail ? ' · ' + m.reason_detail : ''}`;
       else if (m.type === 'entrega') detalle = [m.origen, m.reason_detail, m.recipient_last_name, m.vehicle_plate].filter(Boolean).join(' · ');
       else if (m.type === 'ingreso_punto') detalle = [m.destination, m.notes].filter(Boolean).join(' · ');
       else if (m.type === 'ajuste') detalle = [m.origen, m.qty_after != null ? `de ${m.qty_before} a ${m.qty_after}` : m.notes, m.reason_detail].filter(Boolean).join(' · ');
-      else if (m.type === 'devolucion') detalle = `${m.origen} → ${m.destination || 'DEPOSITO MARKETING ROSARIO'}${m.notes ? ' · ' + m.notes : ''}`;
+      else if (m.type === 'devolucion') detalle = `${m.origen} → ${m.destination || 'Depósito Rosario'}${m.notes ? ' · ' + m.notes : ''}`;
       else if (m.type === 'salida_evento' || m.type === 'retorno_evento' || m.type === 'consumo_evento') detalle = m.notes || '';
       else detalle = m.notes || '';
       const signed = m.type === 'ajuste' && m.qty_after != null ? `${m.qty_after - m.qty_before > 0 ? '+' : '−'}${m.qty}` : m.qty;
       const review = m.type === 'ajuste' && (m.needs_review ? 'pendiente' : (m.reviewed_by_name ? `visto por ${m.reviewed_by_name}` : ''));
       const exceptional = m.type === 'envio_destino' && /Envío excepcional/i.test(m.notes || '');
-      rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type] || 'Otro movimiento', item: m.items?.name, qty: signed, detalle, quien: m.person, ...base, review: review || '', exceptional });
+      rows.push({ id: 'm' + m.id, at: m.created_at, tipo: MOVE_LABELS[m.type] || 'Otro movimiento', item_id: m.item_id, item: m.items?.name, qty: signed, detalle, quien: m.person, ...base, review: review || '', exceptional });
     });
     return rows.sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 1000);
   }, [restocks, withdrawals, movements, destById]);
@@ -747,25 +825,35 @@ export default function App() {
   if (!profile || role === 'none') return <NoAccess onSignOut={() => supabase.auth.signOut()} />;
   if (isPunto && !profile.destination_id) return <NoAccess onSignOut={() => supabase.auth.signOut()} message="Tu usuario todavía no tiene un depósito asignado. Pedile a un administrador que lo configure." />;
 
+  // Menú ordenado por tarea: primero lo que se hace (Operar) y después lo que se consulta
   const nav = isPunto
     ? [['mideposito', 'Mi depósito'], ['recepcion', 'Por recibir', inTransit.length, false], ['historial', 'Historial']]
     : [
-        ['dashboard', 'Dashboard'], ['stock', 'Materiales'], ['depositos', 'Depósitos y puntos'],
-        ['recepcion', 'En camino', inTransit.length + diffShipments.length, diffShipments.length > 0],
-        ['ingresos', 'Ingresos'], ['retiros', 'Retiros'], ['movimientos', 'Envíos'], ['eventos', 'Eventos'], ['historial', 'Historial'],
-        ...(role === 'admin' ? [['usuarios', 'Usuarios']] : [])
+        ['dashboard', 'Dashboard'],
+        ['__sec', 'Operar'],
+        ['ingresos', 'Ingresos'], ['retiros', 'Retiros'],
+        ['movimientos', 'Envíos', inTransit.length + diffShipments.length, diffShipments.length > 0],
+        ['eventos', 'Eventos'],
+        ['__sec', 'Consultar'],
+        ['stock', 'Materiales'], ['depositos', 'Depósitos y puntos'], ['historial', 'Historial'],
+        ...(role === 'admin' ? [['__sec', 'Administrar'], ['usuarios', 'Usuarios']] : [])
       ];
+  // «En camino» ya no es una pantalla aparte: es el filtro «Pendientes de recibir» de Envíos
+  const goTab = (k) => {
+    if (k === 'recepcion' && !isPunto) { setShipFilter('pendientes'); setTab('movimientos'); } else setTab(k);
+    setError(''); setNotice('');
+  };
 
-  const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: isPunto ? 'Por recibir' : 'Envíos en camino', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Envíos', eventos: 'Eventos', historial: 'Historial', usuarios: 'Usuarios' };
+  const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: 'Por recibir', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Envíos', eventos: 'Eventos', historial: 'Historial', usuarios: 'Usuarios' };
   const helps = {
     dashboard: 'Resumen de lo que necesita atención hoy: diferencias de recepción, ajustes para revisar, envíos demorados y eventos.',
-    stock: 'Catálogo de materiales con su stock en el DEPOSITO MARKETING ROSARIO. Buscá o elegí una categoría para ver la lista. Con «Ajustar stock» corregís cantidades dejando motivo.',
+    stock: 'Catálogo de materiales con su stock en el Depósito Rosario. Buscá o elegí una categoría para ver la lista. Con «Ajustar stock» corregís cantidades dejando motivo.',
     depositos: 'Stock de cada depósito y concesionario. Santa Fe y Cañada controlan lo que reciben; en los demás concesionarios solo queda el registro de lo enviado.',
     mideposito: 'El stock de tu depósito. Sube cuando confirmás la recepción de un envío y baja con cada entrega.',
     recepcion: isPunto ? 'Envíos que salieron hacia tu depósito. Tocá Recibir y marcá ✓ si llegó todo bien o ✗ si hay una diferencia (elegís el motivo y la cantidad). Lo que llegó bien se suma a tu stock al instante.' : 'Envíos que salieron de un depósito y todavía no fueron recibidos. Si el destino reporta una diferencia, queda en rojo hasta que la resuelvas.',
-    ingresos: 'Mercadería que entra al DEPOSITO MARKETING ROSARIO por compras a proveedores u otras fuentes. Suma al stock. Las devoluciones desde depósitos se registran con «Devolver a Rosario».',
-    retiros: 'Salidas del DEPOSITO MARKETING ROSARIO por regalos, usos internos o incidencias. Descuenta del stock. Podés retirar varios materiales juntos.',
-    movimientos: 'Envíos a depósitos y concesionarios, con el depósito desde donde salieron. Para mandar materiales usá «Nuevo envío»; la recepción se controla en «En camino».',
+    ingresos: 'Mercadería que entra al Depósito Rosario por compras a proveedores u otras fuentes. Suma al stock. Las devoluciones desde depósitos se registran con «Devolver a Rosario».',
+    retiros: 'Salidas del Depósito Rosario por regalos, usos internos o incidencias. Descuenta del stock. Podés retirar varios materiales juntos.',
+    movimientos: 'Todos los envíos a depósitos y concesionarios. Con «Pendientes de recibir» ves los que todavía están en camino o tienen una diferencia por resolver. Para mandar materiales usá «Nuevo envío».',
     eventos: 'Cada evento reserva materiales para sus fechas. El stock recién sale al tocar «Entregar materiales» y vuelve al registrar el regreso.',
     historial: 'Registro de todo lo que entró, salió o se movió, con fecha y responsable. Filtrá por depósito, fechas o marca y exportalo a Excel.',
     usuarios: 'Quién puede entrar a la plataforma y con qué permisos.'
@@ -786,9 +874,11 @@ export default function App() {
             <NavIcon name={narrow ? (navOpen ? 'close' : 'menu') : (rail ? 'open' : 'close')} />
           </button>
         </div>
-        {nav.map(([key, label, badge, bad]) => (
+        {nav.map(([key, label, badge, bad], idx) => key === '__sec' ? (
+          <div key={`sec-${idx}`} className="nav-section" role="presentation"><span>{label}</span></div>
+        ) : (
           <button key={key} className={tab === key ? 'nav-btn active' : 'nav-btn'} title={label} aria-label={label}
-            onClick={() => { setTab(key); setError(''); setNotice(''); if (narrow) setNavOpen(false); }}>
+            onClick={() => { setTab(key); setError(''); setNotice(''); if (key === 'movimientos') setShipFilter('todos'); if (narrow) setNavOpen(false); }}>
             <NavIcon name={key} /><span className="nav-label">{label}</span>
             {badge > 0 && <span className={`nav-badge${bad ? ' bad' : ''}`}>{badge}</span>}
           </button>
@@ -808,9 +898,20 @@ export default function App() {
             {helps[tab] && <p className="screen-help">{helps[tab]}</p>}
           </div>
           <div className="topbar-actions">
+            {isStaff && (
+              <RowMenu label="+ Nuevo ▾" btnClass="primary-btn new-menu-btn" ariaLabel="Registrar un movimiento nuevo" align="right">
+                <button type="button" role="menuitem" onClick={() => { setError(''); setNotice(''); setRestock(emptyRestock()); setModal({ type: 'restock' }); }}>Ingreso de mercadería</button>
+                <button type="button" role="menuitem" onClick={() => { setError(''); setNotice(''); setWithdrawal(emptyWithdrawal()); setModal({ type: 'withdrawal' }); }}>Retiro</button>
+                <button type="button" role="menuitem" onClick={() => openSend(defaultOrigin)}>Envío</button>
+                <button type="button" role="menuitem" onClick={() => { setError(''); setNotice(''); setModal(emptyEvent()); }}>Evento</button>
+                <button type="button" role="menuitem" onClick={() => { setEditingItem(null); setForm(emptyItem); setError(''); setNotice(''); setModal({ type: 'item' }); }}>Material nuevo</button>
+                <button type="button" role="menuitem" onClick={() => openCount('')}>Conteo físico</button>
+                <button type="button" role="menuitem" onClick={() => { setError(''); setNotice(''); setModal({ type: 'import' }); }}>Importar planilla</button>
+              </RowMenu>
+            )}
             {isStaff && tab === 'stock' && <button className="primary-btn" onClick={() => { setEditingItem(null); setForm(emptyItem); setModal({ type: 'item' }); }}>+ Nuevo material</button>}
-            {isStaff && tab === 'ingresos' && <button className="primary-btn" onClick={() => setModal({ type: 'restock' })}>+ Registrar ingreso</button>}
-            {isStaff && tab === 'retiros' && <button className="primary-btn" onClick={() => { setError(''); setNotice(''); setModal({ type: 'withdrawal' }); }}>+ Registrar retiro</button>}
+            {isStaff && tab === 'ingresos' && <button className="primary-btn" onClick={() => { setError(''); setNotice(''); setRestock(emptyRestock()); setModal({ type: 'restock' }); }}>+ Registrar ingreso</button>}
+            {isStaff && tab === 'retiros' && <button className="primary-btn" onClick={() => { setError(''); setNotice(''); setWithdrawal(emptyWithdrawal()); setModal({ type: 'withdrawal' }); }}>+ Registrar retiro</button>}
             {isStaff && tab === 'movimientos' && <button className="primary-btn" onClick={() => openSend(defaultOrigin)}>+ Nuevo envío</button>}
             {isStaff && tab === 'eventos' && <button className="primary-btn" onClick={() => { setError(''); setNotice(''); setModal(emptyEvent()); }}>+ Nuevo evento</button>}
           </div>
@@ -820,20 +921,30 @@ export default function App() {
         {notice && <div className="notice-banner" role="status">{notice}</div>}
 
         {loading ? <div className="skeleton-wrap" aria-busy="true"><div className="skeleton sk-row" /><div className="skeleton sk-row" /><div className="skeleton sk-block" /></div> :
-          tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} diffs={diffShipments} linesByShipment={linesByShipment} canResolve={isStaff} onResolve={openResolve} events={events} history={history} reviewAdj={reviewAdj} onAck={ackMovement} busy={busy} onGo={setTab} /> :
+          tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} diffs={diffShipments} linesByShipment={linesByShipment} canResolve={isStaff} onResolve={openResolve} events={events} history={history} reviewAdj={reviewAdj} onAck={ackMovement} busy={busy} onGo={goTab}
+            canOperate={isStaff} availOf={(id) => Math.max(0, (itemById[id]?.stock_nucleo || 0) - (reserved[id] || 0))} onBuy={buyFor} onSendFor={sendFor}
+            onSetMin={(p) => setModal({ type: 'pmin', destination_id: p.destination_id, item_id: p.item_id, name: p.item_name, min: p.min_qty })} /> :
           tab === 'stock' ? <StockTable items={filteredItems} totalItems={items.length} categories={categories} inDepots={inDepots} reserved={reserved} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter} photoFilter={photoFilter} setPhotoFilter={setPhotoFilter} allItems={items}
-              onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', sku: item.sku || '', photoFiles: [] }); setError(''); setNotice(''); setModal({ type: 'item' }); }}
+              onOpen={(item) => setModal({ type: 'sheet', item_id: item.id })} onCount={() => openCount('')} onImport={() => { setError(''); setNotice(''); setModal({ type: 'import' }); }}
+              onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', photoFiles: [] }); setError(''); setNotice(''); setModal({ type: 'item' }); }}
               onAdjust={(item) => { setError(''); setNotice(''); setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reserved: reserved[item.id] || 0, reason: '', place: ROSARIO, isRosario: true }); }}
               onDelete={deleteItem} onPhotos={(item) => setModal({ type: 'photos', item })} /> :
           tab === 'usuarios' ? <UsersTab users={users} destinations={destinations} isOwner={isOwner} meId={profile.id} busy={busy} onChange={changeUser} /> :
+          tab === 'depositos' && !isPunto && depView === 'general' ? (
+            <OverviewView destinations={destinations} destStock={destStock} items={items} pointStatus={pointStatus} shipments={shipments}
+              onOpen={(id) => { chooseDest(id); setDepView('uno'); }}
+              toggle={<SegControl value={depView} onChange={setDepView} options={[['uno', 'Un depósito'], ['general', 'Vista general']]} />} />
+          ) :
           tab === 'depositos' || tab === 'mideposito' ? (
             <DepositoView
+              viewToggle={!isPunto ? <SegControl value={depView} onChange={setDepView} options={[['uno', 'Un depósito'], ['general', 'Vista general']]} /> : null}
+              onCount={() => openCount(selectedDest)}
               sentList={shipments.filter(x => x.destination_id === selectedDest)} madeList={shipments.filter(x => x.origin_id === selectedDest)} linesByShipment={linesByShipment} lastSent={lastSent} isDepot={Boolean(destById[selectedDest]?.is_depot)} isPunto={isPunto} canOperate={isStaff || isPunto} destinations={destinations} selectedDest={selectedDest} setSelectedDest={chooseDest}
               onSend={() => openSend(selectedDest)}
               rows={destStock.filter(r => r.destination_id === selectedDest)} status={pointStatus.filter(p => p.destination_id === selectedDest)}
-              itemById={itemById} inTransit={inTransit.filter(m => m.destination_id === selectedDest)} onGoReceive={() => setTab('recepcion')}
+              itemById={itemById} inTransit={inTransit.filter(m => m.destination_id === selectedDest)} onGoReceive={() => goTab('recepcion')}
               onReturn={(r) => setModal({ type: 'return', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, notes: '', place: destById[selectedDest]?.name })}
-              onDeliver={(r) => setModal({ type: 'pwithdraw', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, reason_type: 'regalo_corporativo', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' })}
+              onDeliver={(r) => setModal({ type: 'pwithdraw', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, available: r.qty, qty: 1, reason_type: '', reason_detail: '', recipient_last_name: '', vehicle_plate: '', notes: '' })}
               onStockIn={() => setModal({ type: 'pstockin', destination_id: selectedDest, item_id: '', qty: 1, notes: '' })}
               onMin={(r) => setModal({ type: 'pmin', destination_id: selectedDest, item_id: r.item_id, name: itemById[r.item_id]?.name, min: r.min_qty })}
               onAdjust={(r) => setModal({ type: 'adjust', item_id: r.item_id, name: itemById[r.item_id]?.name, destination_id: selectedDest, current: r.qty, new_qty: r.qty, reason: '', place: destById[selectedDest]?.name })} />
@@ -841,8 +952,17 @@ export default function App() {
           tab === 'recepcion' ? <ReceptionTable rows={inTransit} diffRows={isPunto ? diffShipments.filter(x => x.destination_id === profile.destination_id) : diffShipments} lines={linesByShipment} canReceive={isStaff || isPunto} canResolve={isStaff} onReceive={openReception} onResolve={openResolve} /> :
           tab === 'ingresos' ? <RestockTable rows={restocks} /> :
           tab === 'retiros' ? <WithdrawalTable rows={withdrawals} /> :
-          tab === 'movimientos' ? <MovementTable rows={shipments} lines={linesByShipment} canResolve={isStaff} onResolve={openResolve} destById={destById} /> :
-          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} itemById={itemById} isStaff={isStaff} onNew={() => { setError(''); setNotice(''); setModal(emptyEvent()); }} onPrint={(ev) => setModal({ type: 'retiro', event: ev })} onWithdraw={(ev) => setModal({ type: 'withdrawEvent', event: ev, by: ev.carried_by || '' })} onReturn={(ev) => setModal({ type: 'returnEvent', event: ev, by: '', lines: eventItems.filter(ei => ei.event_id === ev.id && ei.remito_salida_date && !ei.remito_llegada_ok).map(ei => ({ id: ei.id, name: ei.items?.name, qty: ei.qty_allocated, qty_returned: ei.qty_allocated })) })} onCancel={cancelEvent} onEdit={editEvent} /> :
+          tab === 'movimientos' ? (
+            <>
+              <section className="card" style={{ marginBottom: 18 }}>
+                <SegControl value={shipFilter} onChange={setShipFilter} options={[['todos', `Todos (${shipments.length})`], ['pendientes', `Pendientes de recibir (${inTransit.length + diffShipments.length})`]]} />
+              </section>
+              {shipFilter === 'pendientes'
+                ? <ReceptionTable rows={inTransit} diffRows={diffShipments} lines={linesByShipment} canReceive={isStaff} canResolve={isStaff} onReceive={openReception} onResolve={openResolve} />
+                : <MovementTable rows={shipments} lines={linesByShipment} canResolve={isStaff} onResolve={openResolve} destById={destById} />}
+            </>
+          ) :
+          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} itemById={itemById} isStaff={isStaff} onNew={() => { setError(''); setNotice(''); setModal(emptyEvent()); }} onPrint={(ev) => setModal({ type: 'retiro', event: ev })} onWithdraw={(ev) => setModal({ type: 'withdrawEvent', event: ev, by: ev.carried_by || '' })} onReturn={(ev) => setModal({ type: 'returnEvent', event: ev, by: '', lines: eventItems.filter(ei => ei.event_id === ev.id && ei.remito_salida_date && !ei.remito_llegada_ok).map(ei => ({ id: ei.id, name: ei.items?.name, qty: ei.qty_allocated, qty_returned: ei.qty_allocated })) })} onCancel={cancelEvent} onEdit={editEvent} onDuplicate={duplicateEvent} /> :
           tab === 'historial' ? <HistoryTab rows={history} destinations={destinations} loaded={{ mov: movements.length, ret: withdrawals.length, ing: restocks.length }} canAck={isStaff} /> : null
         }
       </main>
@@ -850,6 +970,18 @@ export default function App() {
       {modal?.type === 'confirm' && <ConfirmModal modal={modal} onClose={() => setModal(null)} />}
       {modal?.type === 'photos' && <PhotoViewer item={modal.item} onClose={() => setModal(null)} />}
       {modal?.type === 'item' && <ItemModal categories={categories} form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setModal(null)} onSubmit={saveItem} />}
+      {modal?.type === 'count' && <CountModal modal={modal} setModal={setModal} items={items} destStock={destStock} destinations={destinations} reserved={reserved} canPick={!isPunto} onClose={() => setModal(null)} onSubmit={saveCount} />}
+      {modal?.type === 'import' && <ImportModal categories={categories} destinations={destinations} items={items} onClose={() => setModal(null)} onSubmit={saveImport} />}
+      {modal?.type === 'sheet' && itemById[modal.item_id] && (
+        <ItemSheet item={itemById[modal.item_id]} reserved={reserved} destStock={destStock} destinations={destinations} isStaff={isStaff}
+          openEvents={eventItems.filter(ei => ei.item_id === modal.item_id && !ei.remito_salida_date).map(ei => ({ ...ei, ev: events.find(v => v.id === ei.event_id) })).filter(x => x.ev && x.ev.status === 'abierto')}
+          history={history.filter(h => h.item_id === modal.item_id).slice(0, 8)}
+          onClose={() => setModal(null)}
+          onPhotos={(item) => setModal({ type: 'photos', item })}
+          onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', photoFiles: [] }); setError(''); setNotice(''); setModal({ type: 'item' }); }}
+          onAdjust={(item) => { setError(''); setNotice(''); setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reserved: reserved[item.id] || 0, reason: '', place: ROSARIO, isRosario: true }); }}
+          onDelete={deleteItem} />
+      )}
       {modal?.type === 'restock' && <RestockModal restock={restock} setRestock={setRestock} items={items} onClose={() => setModal(null)} onSubmit={saveRestock} />}
       {modal?.type === 'withdrawal' && <WithdrawalModal withdrawal={withdrawal} setWithdrawal={setWithdrawal} items={items} reserved={reserved} onClose={() => setModal(null)} onSubmit={saveWithdrawal} />}
       {modal?.type === 'send' && <SendModal modal={modal} setModal={setModal} items={items} destinations={destinations} destStock={destStock} reserved={reserved} isStaff={isStaff} ownDestId={profile.destination_id} onClose={() => setModal(null)} onSubmit={saveShipment} />}
@@ -861,13 +993,13 @@ export default function App() {
       {modal?.type === 'resolve' && <ResolveModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={saveResolution} />}
       {modal?.type === 'pwithdraw' && <PointWithdrawModal modal={modal} setModal={setModal} onClose={() => setModal(null)} onSubmit={savePointWithdrawal} />}
       {modal?.type === 'return' && (
-        <Modal title="Devolver a DEPOSITO MARKETING ROSARIO" onClose={() => setModal(null)} onSubmit={saveReturn} submitLabel="Registrar devolución">
+        <Modal title="Devolver a Depósito Rosario" onClose={() => setModal(null)} onSubmit={saveReturn} submitLabel="Registrar devolución">
           <p><strong>{modal.name}</strong> · en {modal.place}: {modal.available}</p>
           <div className="form-grid">
             <label>Cantidad que vuelve *<input type="number" min="1" max={modal.available} required value={modal.qty} onChange={e => setModal(p => ({ ...p, qty: e.target.value }))} /></label>
             <label>Nota (opcional)<input value={modal.notes} onChange={e => setModal(p => ({ ...p, notes: e.target.value }))} placeholder="Ej: sobrante de campaña" /></label>
           </div>
-          <p className="muted small">Se descuenta de {modal.place} y se suma al stock de DEPOSITO MARKETING ROSARIO. Registralo cuando la mercadería ya llegó a Rosario.</p>
+          <p className="muted small">Se descuenta de {modal.place} y se suma al stock de Depósito Rosario. Registralo cuando la mercadería ya llegó a Rosario.</p>
         </Modal>
       )}
       {modal?.type === 'pstockin' && <PointStockInModal modal={modal} setModal={setModal} items={items} qtyOf={(id) => (destStock.find(r => r.destination_id === modal.destination_id && r.item_id === id)?.qty || 0)} onClose={() => setModal(null)} onSubmit={savePointStockIn} />}
@@ -933,7 +1065,7 @@ function NoAccess({ onSignOut, message }) {
   );
 }
 
-function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, diffs, linesByShipment, canResolve, onResolve, events, history, reviewAdj, onAck, busy, onGo }) {
+function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, diffs, linesByShipment, canResolve, onResolve, events, history, reviewAdj, onAck, busy, onGo, canOperate, availOf, onBuy, onSendFor, onSetMin }) {
   const urgent = inTransit.filter(m => daysSince(m.created_at) > 5);
   const t = todayStr();
   const soon = addDays(t, 3);
@@ -1013,16 +1145,37 @@ function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, d
           {nAlerts === 0 && <p className="muted">Sin alertas</p>}
           {centralAlerts.length > 0 && (
             <>
-              <h3 className="sub">Recomprar al proveedor (DEPOSITO MARKETING ROSARIO)</h3>
-              <table><thead><tr><th>Material</th><th>Stock</th><th>Mínimo</th></tr></thead>
-                <tbody>{centralAlerts.slice(0, 8).map(i => <tr key={i.id}><td>{i.name}</td><td className="warn">{i.stock_nucleo}</td><td>{i.reorder_nucleo}</td></tr>)}</tbody></table>
+              <h3 className="sub">Recomprar al proveedor (Depósito Rosario)</h3>
+              <p className="muted small">El punto de recompra es el mínimo cargado o, si es mayor, el que sale del consumo de los últimos 90 días.</p>
+              <table><thead><tr><th>Material</th><th>Stock</th><th>Recomprar a las</th><th>Sugerido</th>{canOperate && <th></th>}</tr></thead>
+                <tbody>{centralAlerts.slice(0, 8).map(a => (
+                  <tr key={a.item_id}>
+                    <td>{a.item_name}{a.brand && a.brand !== 'Genérico' ? <small>{a.brand}</small> : null}</td>
+                    <td className="warn">{a.qty}</td><td>{a.restock_point > 0 ? a.restock_point : '—'}</td>
+                    <td>{a.suggested_qty > 0 ? `+${a.suggested_qty}` : '—'}</td>
+                    {canOperate && <td><button type="button" className="secondary-btn small-btn" onClick={() => onBuy(a)}>Registrar compra</button></td>}
+                  </tr>))}</tbody></table>
+              {centralAlerts.length > 8 && <p className="muted small">y {centralAlerts.length - 8} más: están en Materiales.</p>}
             </>
           )}
           {pointAlerts.length > 0 && (
             <>
               <h3 className="sub">Reponer en depósitos y puntos</h3>
-              <table><thead><tr><th>Depósito</th><th>Material</th><th>Stock</th><th>Reponer</th></tr></thead>
-                <tbody>{pointAlerts.slice(0, 8).map(p => <tr key={p.destination_id + p.item_id}><td>{p.destination_name}</td><td>{p.item_name}</td><td className="warn">{p.qty}</td><td>{p.suggested_qty > 0 ? `+${p.suggested_qty}` : '—'}</td></tr>)}</tbody></table>
+              <p className="muted small">Si el material no tiene mínimo cargado, se usa lo que se entregó en los últimos 90 días; si tampoco hay consumo, definí el mínimo a mano.</p>
+              <table><thead><tr><th>Depósito</th><th>Material</th><th>Stock</th><th>Reponer</th>{canOperate && <th></th>}</tr></thead>
+                <tbody>{pointAlerts.slice(0, 8).map(p => {
+                  const av = availOf(p.item_id);
+                  return (
+                    <tr key={p.destination_id + p.item_id}><td>{p.destination_name}</td><td>{p.item_name}</td><td className="warn">{p.qty}</td>
+                      <td>{p.suggested_qty > 0 ? `+${p.suggested_qty}` : 'Sin dato'}</td>
+                      {canOperate && <td>
+                        {p.suggested_qty > 0
+                          ? <button type="button" className="secondary-btn small-btn" disabled={av < 1} title={av < 1 ? 'No hay stock disponible en Rosario' : ''} onClick={() => onSendFor(p)}>Enviar desde Rosario</button>
+                          : <button type="button" className="secondary-btn small-btn" onClick={() => onSetMin(p)}>Fijar mínimo</button>}
+                      </td>}
+                    </tr>);
+                })}</tbody></table>
+              {pointAlerts.length > 8 && <p className="muted small">y {pointAlerts.length - 8} más: están en Depósitos y puntos.</p>}
             </>
           )}
         </section>
@@ -1044,7 +1197,7 @@ function Stat({ label, value, tone, onClick }) {
     ? <button type="button" className={`stat clickable ${tone || ''}`} onClick={onClick}>{inner}</button>
     : <div className={`stat ${tone || ''}`}>{inner}</div>;
 }
-function RowMenu({ children }) {
+function RowMenu({ children, label = '⋯', btnClass = 'menu-btn', ariaLabel = 'Más acciones', align = 'right' }) {
   const [open, setOpen] = useState(false);
   const ref = React.useRef(null);
   useEffect(() => {
@@ -1056,13 +1209,13 @@ function RowMenu({ children }) {
   }, [open]);
   return (
     <div className="row-menu" ref={ref}>
-      <button type="button" className="menu-btn" aria-haspopup="menu" aria-expanded={open} aria-label="Más acciones" onClick={() => setOpen(o => !o)}>⋯</button>
-      {open && <div className="menu-list" role="menu" onClick={() => setOpen(false)}>{children}</div>}
+      <button type="button" className={btnClass} aria-haspopup="menu" aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen(o => !o)}>{label}</button>
+      {open && <div className={`menu-list${align === 'left' ? ' menu-left' : ''}`} role="menu" onClick={() => setOpen(false)}>{children}</div>}
     </div>
   );
 }
 
-function StockTable({ items: filtered, allItems, categories, inDepots, reserved, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, photoFilter, setPhotoFilter, onEdit, onAdjust, onDelete, onPhotos }) {
+function StockTable({ items: filtered, allItems, categories, inDepots, reserved, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, photoFilter, setPhotoFilter, onOpen, onEdit, onAdjust, onDelete, onPhotos, onCount, onImport }) {
   const PAGE = 25;
   const [page, setPage] = useState(0);
   const [showAll, setShowAll] = useState(false);
@@ -1076,24 +1229,52 @@ function StockTable({ items: filtered, allItems, categories, inDepots, reserved,
     ['Sin categoría', allItems.filter(i => !known.has(i.category)).length]
   ].filter(x => x[1] > 0);
   const driveCount = allItems.filter(i => (i.photo_urls || []).some(u => !isStorageUrl(u))).length;
-  const pages = Math.max(1, Math.ceil(filtered.length / PAGE));
+  // Mismo nombre y misma marca más de una vez = material repetido (conviene dejar uno solo antes de la carga definitiva)
+  const dupes = useMemo(() => {
+    const m = new Map();
+    allItems.forEach(i => { const k = `${norm(i.name.trim())}|${i.brand || 'Genérico'}`; m.set(k, [...(m.get(k) || []), i]); });
+    return [...m.values()].filter(a => a.length > 1);
+  }, [allItems]);
+  // Se ordena por nombre y marca: las marcas de un mismo material quedan juntas, bajo un encabezado con el total
+  const sorted = useMemo(() => [...filtered].sort((a, b) => norm(a.name.trim()).localeCompare(norm(b.name.trim())) || String(a.brand || '').localeCompare(String(b.brand || ''))), [filtered]);
+  const groupOf = useMemo(() => {
+    const g = {};
+    sorted.forEach(i => { const k = norm(i.name.trim()); (g[k] = g[k] || []).push(i); });
+    return g;
+  }, [sorted]);
+  const pages = Math.max(1, Math.ceil(sorted.length / PAGE));
   const cur = Math.min(page, pages - 1);
-  const items = searching ? filtered.slice(cur * PAGE, cur * PAGE + PAGE) : [];
-  const catNames = [...categories.map(c => c.name), ...(allItems.some(i => !known.has(i.category)) ? [] : [])];
+  const items = searching ? sorted.slice(cur * PAGE, cur * PAGE + PAGE) : [];
+  const catNames = categories.map(c => c.name);
   return (
     <section className="card">
-      <div className="card-head"><h2>Materiales</h2></div>
+      <div className="card-head">
+        <h2>Materiales</h2>
+        {isStaff && (
+          <div className="head-actions">
+            <button type="button" className="secondary-btn" onClick={onCount}>Conteo físico</button>
+            <button type="button" className="secondary-btn" onClick={onImport}>Importar planilla</button>
+          </div>
+        )}
+      </div>
       <div className="filters-row">
-        <label className="filter-label">Buscar<input value={query} onChange={e => setQuery(e.target.value)} placeholder="Nombre, SKU o marca…" /></label>
+        <label className="filter-label">Buscar<input value={query} onChange={e => setQuery(e.target.value)} placeholder="Nombre o marca…" /></label>
         <label className="filter-label">Categoría<select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option>Todas</option>{catNames.map(c => <option key={c}>{c}</option>)}</select></label>
         <label className="filter-label">Marca<select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}><option>Todas</option><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select></label>
         {isStaff && driveCount > 0 && (
           <label className="check-filter"><input type="checkbox" checked={photoFilter} onChange={e => setPhotoFilter(e.target.checked)} /> Fotos de Drive a revisar ({driveCount})</label>
         )}
       </div>
+      {isStaff && dupes.length > 0 && (
+        <details className="dupes-box">
+          <summary>⚠ {dupes.length} material(es) repetido(s): mismo nombre y misma marca</summary>
+          <p className="muted small">Conviene dejar uno solo antes de la carga definitiva: pasá el stock al que se queda (con «Ajustar stock») y archivá el otro con «Eliminar o archivar».</p>
+          <ul>{dupes.map(a => <li key={a[0].id}><button type="button" className="link-btn" onClick={() => { setQuery(a[0].name); }}>{a[0].name}</button> · {a[0].brand || 'Genérico'} · {a.length} veces ({a.map(x => `${x.stock_nucleo || 0} u.`).join(' y ')})</li>)}</ul>
+        </details>
+      )}
       {!searching && (
         <div className="empty-state">
-          <p><strong>{allItems.length} materiales cargados.</strong> Buscá por nombre, SKU o marca, o elegí una categoría:</p>
+          <p><strong>{allItems.length} materiales cargados.</strong> Buscá por nombre o marca, o elegí una categoría:</p>
           <div className="cat-chips">
             {catCounts.map(([c, n]) => <button type="button" key={c} className="chip-btn" onClick={() => c !== 'Sin categoría' && setCategoryFilter(c)}>{c} <span>{n}</span></button>)}
           </div>
@@ -1101,31 +1282,39 @@ function StockTable({ items: filtered, allItems, categories, inDepots, reserved,
         </div>
       )}
       {searching && (<>
-      <p className="muted small">{filtered.length} material(es){filtered.length !== allItems.length ? ` de ${allItems.length}` : ''}</p>
+      <p className="muted small">{filtered.length} material(es){filtered.length !== allItems.length ? ` de ${allItems.length}` : ''} · tocá el nombre para ver la ficha con el stock en cada depósito</p>
       <table className="stack-table">
-        <thead><tr><th></th><th>Material</th><th>Categoría</th><th>Marca</th><th>DEPOSITO MARKETING ROSARIO</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
+        <thead><tr><th></th><th>Material</th><th>Categoría</th><th>Marca</th><th>Depósito Rosario</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
         <tbody>
-          {items.map(i => {
+          {items.map((i, idx) => {
             const low = Number(i.reorder_nucleo) > 0 && Number(i.stock_nucleo) <= Number(i.reorder_nucleo);
+            const k = norm(i.name.trim());
+            const grp = groupOf[k];
+            const prev = items[idx - 1];
+            const newGroup = grp.length > 1 && (!prev || norm(prev.name.trim()) !== k);
             return (
-              <tr key={i.id}>
+              <React.Fragment key={i.id}>
+                {newGroup && <tr className="group-row"><td colSpan="7"><strong>{i.name}</strong> · {grp.length} marcas · {grp.reduce((a, x) => a + (x.stock_nucleo || 0), 0)} u. en Rosario</td></tr>}
+              <tr>
                 <td className="photo-col">{i.photo_urls?.length ? (
                   <button type="button" className="thumb-btn" onClick={() => onPhotos(i)} title="Ver fotos">
                     <Thumb url={i.photo_urls[0]} alt={i.name} />
                     {i.photo_urls.length > 1 && <span className="thumb-count">{i.photo_urls.length}</span>}
                   </button>) : null}</td>
-                <td className="cell-main"><strong>{i.name}</strong><small>{i.sku || 'Sin SKU'}</small></td>
+                <td className="cell-main"><button type="button" className="name-link" onClick={() => onOpen(i)}><strong>{i.name}</strong></button></td>
                 <td data-label="Categoría">{i.category}</td><td data-label="Marca">{i.brand}</td>
                 <td data-label="Rosario" className={low ? 'warn' : ''}>{i.stock_nucleo || 0}{reserved?.[i.id] > 0 && <small>reservado {reserved[i.id]} · disponible {Math.max(0, (i.stock_nucleo || 0) - reserved[i.id])}</small>}{Number(i.reorder_nucleo) > 0 && <small>mín. {i.reorder_nucleo}</small>}</td>
                 <td data-label="En depósitos">{inDepots[i.id] || 0}</td>
                 {isStaff && <td className="actions-col">
                   <RowMenu>
+                    <button type="button" role="menuitem" onClick={() => onOpen(i)}>Ver ficha</button>
                     <button type="button" role="menuitem" onClick={() => onEdit(i)}>Editar</button>
                     <button type="button" role="menuitem" onClick={() => onAdjust(i)}>Ajustar stock</button>
-                    <button type="button" role="menuitem" className="danger" onClick={() => onDelete(i)}>Eliminar</button>
+                    <button type="button" role="menuitem" className="danger" onClick={() => onDelete(i)}>Eliminar o archivar</button>
                   </RowMenu>
                 </td>}
               </tr>
+              </React.Fragment>
             );
           })}
           {!items.length && <tr><td colSpan="7" className="muted">No hay materiales con esos filtros</td></tr>}
@@ -1162,7 +1351,7 @@ function DestSelect({ destinations, value, onChange }) {
   );
 }
 
-function DepositoView({ sentList, madeList, linesByShipment, lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, onSend, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onReturn, onMin, onAdjust }) {
+function DepositoView({ viewToggle, onCount, sentList, madeList, linesByShipment, lastSent, isDepot, isPunto, canOperate, destinations, selectedDest, setSelectedDest, onSend, rows, status, itemById, inTransit, onGoReceive, onDeliver, onStockIn, onReturn, onMin, onAdjust }) {
   const statusByItem = Object.fromEntries(status.map(s => [s.item_id, s]));
   const dest = destinations.find(d => d.id === selectedDest);
   const canSend = canOperate && isDepot && dest?.supplies_dealers;
@@ -1174,6 +1363,7 @@ function DepositoView({ sentList, madeList, linesByShipment, lastSent, isDepot, 
     <>
       {!isPunto && (
         <section className="card" style={{ marginBottom: 18 }}>
+          {viewToggle}
           <label className="inline-label">Depósito / punto
             <DestSelect destinations={destinations} value={selectedDest} onChange={setSelectedDest} />
           </label>
@@ -1225,7 +1415,12 @@ function DepositoView({ sentList, madeList, linesByShipment, lastSent, isDepot, 
       <section className="card">
         <div className="card-head">
           <h2>{isDepot ? 'Consumibles' : (dest?.name || 'Concesionario')}{isDepot ? ` · ${dest?.name || ''}` : ''}</h2>
-          {canOperate && isDepot && !isPunto && <button className="primary-btn" onClick={onStockIn}>+ Cargar stock</button>}
+          {canOperate && (
+            <div className="head-actions">
+              <button type="button" className="secondary-btn" onClick={onCount}>Conteo físico</button>
+              {isDepot && !isPunto && <button className="primary-btn" onClick={onStockIn}>+ Cargar stock</button>}
+            </div>
+          )}
         </div>
         {isDepot
           ? <p className="muted small">El stock sube cuando se confirma la recepción de un envío. Baja con cada entrega, envío o devolución a Rosario. El punto de restock sugerido se calcula con las entregas y los envíos a concesionarios de los últimos 90 días.</p>
@@ -1244,7 +1439,10 @@ function DepositoView({ sentList, madeList, linesByShipment, lastSent, isDepot, 
                   {nameCell(r)}
                   <td data-label="Total enviado">{r.qty}</td>
                   <td data-label="Último envío">{ls ? `${ls.qty} el ${fmtDate(ls.created_at)}` : '—'}</td>
-                  {canOperate && <td className="actions-col">{!isPunto && <button className="link-btn" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}<button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button></td>}
+                  {canOperate && <td className="actions-col"><RowMenu>
+                    {!isPunto && <button type="button" role="menuitem" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}
+                    <button type="button" role="menuitem" onClick={() => onAdjust(r)}>Ajustar</button>
+                  </RowMenu></td>}
                 </tr>
               );
               return (
@@ -1255,10 +1453,12 @@ function DepositoView({ sentList, madeList, linesByShipment, lastSent, isDepot, 
                   <td data-label="Reponer">{s?.suggested_qty > 0 && st !== 'ok' ? `+${s.suggested_qty}` : '—'}</td>
                   <td data-label="Estado"><span className={`chip ${st}`}>{st === 'ok' ? 'OK' : st === 'sin_stock' ? 'Sin stock' : 'Reponer'}</span></td>
                   {canOperate && <td className="actions-col">
-                    <button className="link-btn" disabled={r.qty < 1} onClick={() => onDeliver(r)}>Entregar</button>
-                    {!isPunto && <button className="link-btn" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}
-                    <button className="link-btn" onClick={() => onMin(r)}>Mínimo</button>
-                    <button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button>
+                    <button className="secondary-btn small-btn" disabled={r.qty < 1} onClick={() => onDeliver(r)}>Entregar</button>
+                    <RowMenu>
+                      {!isPunto && <button type="button" role="menuitem" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}
+                      <button type="button" role="menuitem" onClick={() => onMin(r)}>Cambiar mínimo</button>
+                      <button type="button" role="menuitem" onClick={() => onAdjust(r)}>Ajustar stock</button>
+                    </RowMenu>
                   </td>}
                 </tr>
               );
@@ -1278,10 +1478,10 @@ function DepositoView({ sentList, madeList, linesByShipment, lastSent, isDepot, 
                 <tr key={r.item_id}>
                   {nameCell(r)}
                   <td data-label="Cantidad">{r.qty}</td>
-                  {canOperate && <td className="actions-col">
-                    {!isPunto && <button className="link-btn" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}
-                    <button className="link-btn" onClick={() => onAdjust(r)}>Ajustar</button>
-                  </td>}
+                  {canOperate && <td className="actions-col"><RowMenu>
+                    {!isPunto && <button type="button" role="menuitem" disabled={r.qty < 1} onClick={() => onReturn(r)}>Devolver a Rosario</button>}
+                    <button type="button" role="menuitem" onClick={() => onAdjust(r)}>Ajustar stock</button>
+                  </RowMenu></td>}
                 </tr>
               ))}
               {!equip.length && <tr><td colSpan="3" className="muted">No hay equipamiento prestado en este depósito.</td></tr>}
@@ -1362,12 +1562,37 @@ function ReceptionTable({ rows, diffRows, lines, canReceive, canResolve, onRecei
 }
 
 function RestockTable({ rows }) {
+  // Los ingresos con varios materiales comparten batch_id: se muestran como un solo ingreso
+  const groups = useMemo(() => {
+    const map = new Map();
+    rows.forEach(r => {
+      const k = r.batch_id || r.id;
+      if (!map.has(k)) map.set(k, { key: k, first: r, lines: [] });
+      map.get(k).lines.push(r);
+    });
+    return [...map.values()];
+  }, [rows]);
   return (
     <section className="card">
-      <h2>Ingresos al DEPOSITO MARKETING ROSARIO</h2>
-      <table>
-        <thead><tr><th>Fecha</th><th>Material</th><th>Cantidad</th><th>Origen</th><th>Costo</th><th>Registrado por</th></tr></thead>
-        <tbody>{rows.map(r => <tr key={r.id}><td>{fmtDate(r.created_at)}</td><td>{r.items?.name}</td><td>{r.qty}</td><td>{SOURCE_LABELS[r.source] || r.source}</td><td>{r.cost ? fmtMoney(r.cost) : '—'}</td><td>{r.person}</td></tr>)}</tbody>
+      <h2>Ingresos al Depósito Rosario</h2>
+      <table className="stack-table">
+        <thead><tr><th>Fecha</th><th>Materiales</th><th>Unidades</th><th>Origen</th><th>Costo</th><th>Notas</th><th>Registrado por</th></tr></thead>
+        <tbody>{groups.map(({ key, first: r, lines }) => {
+          const cost = lines.reduce((a, l) => a + (Number(l.cost) || 0), 0);
+          return (
+            <tr key={key}>
+              <td className="cell-main">{fmtDate(r.created_at)}</td>
+              <td data-label="Materiales">{lines.length > 1 ? <ul className="ship-lines">{lines.map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul> : r.items?.name}</td>
+              <td data-label="Unidades">{lines.reduce((a, l) => a + l.qty, 0)}</td>
+              <td data-label="Origen">{SOURCE_LABELS[r.source] || r.source}</td>
+              <td data-label="Costo">{cost > 0 ? fmtMoney(cost) : '—'}</td>
+              <td data-label="Notas">{r.notes || '—'}</td>
+              <td data-label="Registrado por">{r.person}</td>
+            </tr>
+          );
+        })}
+          {!groups.length && <tr><td colSpan="7" className="muted">Todavía no hay ingresos</td></tr>}
+        </tbody>
       </table>
     </section>
   );
@@ -1386,7 +1611,7 @@ function WithdrawalTable({ rows }) {
   }, [rows]);
   return (
     <section className="card">
-      <h2>Retiros / Uso (DEPOSITO MARKETING ROSARIO)</h2>
+      <h2>Retiros / Uso (Depósito Rosario)</h2>
       <table className="stack-table">
         <thead><tr><th>Fecha</th><th>Materiales</th><th>Unidades</th><th>Motivo</th><th>Detalle</th><th>Cliente</th><th>Patente</th><th>Registrado por</th></tr></thead>
         <tbody>{groups.map(({ key, first: r, lines }) => (
@@ -1451,7 +1676,7 @@ const fmtRange = (e) => {
   return a === b ? fmtDate(a + 'T12:00:00') : `${fmtDate(a + 'T12:00:00')} al ${fmtDate(b + 'T12:00:00')}`;
 };
 
-function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, onWithdraw, onReturn, onCancel, onEdit }) {
+function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, onWithdraw, onReturn, onCancel, onEdit, onDuplicate }) {
   return (
     <section className="card">
       <h2>Eventos</h2>
@@ -1487,6 +1712,7 @@ function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, on
                 <div className="event-actions">
                   <button className="secondary-btn small-btn" onClick={() => onPrint(e)}>Retiro para imprimir</button>
                   {isStaff && e.status === 'abierto' && <button className="secondary-btn small-btn" onClick={() => onEdit(e)}>Editar evento</button>}
+                  {isStaff && lines.length > 0 && <button className="secondary-btn small-btn" onClick={() => onDuplicate(e)}>Duplicar para otras fechas</button>}
                   {isStaff && e.status === 'abierto' && pendingOut && <button className="primary-btn small-btn" onClick={() => onWithdraw(e)}>Entregar materiales</button>}
                   {isStaff && e.status === 'abierto' && outNow && <button className="primary-btn small-btn" onClick={() => onReturn(e)}>Registrar regreso</button>}
                   {isStaff && e.status === 'abierto' && !lines.some(l => l.remito_salida_date) && <button className="link-btn danger" onClick={() => onCancel(e)}>Cancelar evento</button>}
@@ -1653,7 +1879,9 @@ function PhotoViewer({ item, onClose }) {
 }
 
 function ItemModal({ categories, form, setForm, editing, onClose, onSubmit }) {
+  const { busy } = React.useContext(UiCtx);
   const [fileMsg, setFileMsg] = useState('');
+  const brandInName = nameHasBrand(form.name);
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
   // La categoría depende del tipo (consumible / equipamiento): al cambiar el tipo se vuelve a elegir
   const cats = categories.filter(c => c.kind === form.kind);
@@ -1666,10 +1894,12 @@ function ItemModal({ categories, form, setForm, editing, onClose, onSubmit }) {
     if (ok.length < all.length && !ok.length) e.target.value = '';
   };
   return (
-    <Modal title={`${editing ? 'Editar' : 'Nuevo'} material`} onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar">
+    <Modal title={`${editing ? 'Editar' : 'Nuevo'} material`} onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar"
+      extraActions={<button type="submit" className="secondary-btn" data-another="1" disabled={busy}>Guardar y crear otra marca</button>}>
       <div className="form-grid">
-        <label>Nombre *<input required value={form.name} onChange={e => set('name', e.target.value)} /></label>
-        <label>SKU<input value={form.sku} onChange={e => set('sku', e.target.value.toUpperCase())} /></label>
+        <label>Nombre *<input required value={form.name} onChange={e => set('name', e.target.value)} placeholder="Tipo + detalle. Ej: Llavero metálico pintado" />
+          <small className="field-help">La marca va en su propio campo, no en el nombre. Si el mismo material existe para varias marcas, cargá una vez cada marca con el mismo nombre.</small>
+          {brandInName && <small className="warn">El nombre incluye «{brandInName}»: sacalo del nombre y elegí la marca abajo.</small>}</label>
         <label>Tipo<select value={form.kind} onChange={e => setKind(e.target.value)}><option value="consumible">Consumible (se entrega)</option><option value="equipamiento">Equipamiento (se presta y vuelve)</option></select></label>
         <label>Categoría *<select required value={form.category} onChange={e => set('category', e.target.value)}><option value="">Elegí la categoría…</option>{cats.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}</select></label>
         <label>Marca<select value={form.brand} onChange={e => set('brand', e.target.value)}><option>Genérico</option>{BRANDS.map(b => <option key={b}>{b}</option>)}</select>
@@ -1677,8 +1907,8 @@ function ItemModal({ categories, form, setForm, editing, onClose, onSubmit }) {
         {form.category === 'Regalos' && (
           <label>Ocasión<select value={form.occasion} onChange={e => set('occasion', e.target.value)}><option value="">—</option><option>Nuevo</option><option>Usado</option><option>Service</option><option>Postventa</option></select></label>
         )}
-        {!editing && <label>Stock inicial en DEPOSITO MARKETING ROSARIO<input type="number" min="0" value={form.stock_nucleo} onChange={e => set('stock_nucleo', e.target.value)} /></label>}
-        <label>Mínimo DEPOSITO MARKETING ROSARIO (recompra)<input type="number" min="0" value={form.reorder_nucleo} onChange={e => set('reorder_nucleo', e.target.value)} /></label>
+        {!editing && <label>Stock inicial en Depósito Rosario<input type="number" min="0" value={form.stock_nucleo} onChange={e => set('stock_nucleo', e.target.value)} /></label>}
+        <label>Mínimo Depósito Rosario (recompra)<input type="number" min="0" value={form.reorder_nucleo} onChange={e => set('reorder_nucleo', e.target.value)} /></label>
         <label>Demora del proveedor (días)<input type="number" min="0" value={form.lead_time_days} onChange={e => set('lead_time_days', e.target.value)} />
           <small className="field-help">Se usa para avisarte cuándo recomprar.</small></label>
       </div>
@@ -1706,9 +1936,10 @@ function ItemModal({ categories, form, setForm, editing, onClose, onSubmit }) {
 }
 const itemLabel = (i) => `${i.name}${i.brand && i.brand !== 'Genérico' ? ` · ${i.brand}` : ''}`;
 const itemSearch = (i) => `${i.name} ${i.brand || ''} ${i.sku || ''} ${i.category || ''}`;
+const nameHasBrand = (name) => BRANDS.filter(b => b !== 'Neostar').find(b => new RegExp(`(^|[^a-záéíóúñ])${b}([^a-záéíóúñ]|$)`, 'i').test(String(name || '')));
 
 /* Renglones «material + cantidad» con buscador. options: [{ id, label, search, avail?, note? }] */
-function LinesEditor({ lines, onChange, options, rightLabel = 'Disponible', hideZero = true, addLabel = '+ Agregar otro material' }) {
+function LinesEditor({ lines, onChange, options, rightLabel = 'Disponible', hideZero = true, addLabel = '+ Agregar otro material', withCost = false }) {
   const byId = useMemo(() => Object.fromEntries(options.map(o => [o.id, o])), [options]);
   const set = (i, patch) => onChange(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)));
   const del = (i) => onChange(lines.length > 1 ? lines.filter((_, j) => j !== i) : lines);
@@ -1720,11 +1951,12 @@ function LinesEditor({ lines, onChange, options, rightLabel = 'Disponible', hide
           const excl = new Set(lines.filter((_, j) => j !== i).map(x => x.item_id).filter(Boolean));
           const max = o?.avail != null ? Math.max(o.avail, 0) : undefined;
           return (
-            <div key={i} className="send-line">
+            <div key={i} className={`send-line${withCost ? ' has-cost' : ''}`}>
               {l.locked
                 ? <div className="locked-line"><strong>{o?.label || 'Material'}</strong><small>Ya entregado: no se puede cambiar</small></div>
                 : <MaterialPicker options={options} value={l.item_id} onChange={v => set(i, { item_id: v, qty: 1 })} excludeIds={excl} rightLabel={rightLabel} hideZero={hideZero} required />}
               <input type="number" min="1" max={max || undefined} disabled={!l.item_id || l.locked} value={l.qty} onChange={e => set(i, { qty: e.target.value })} aria-label="Cantidad" required />
+              {withCost && <input type="number" min="0" step="0.01" disabled={!l.item_id} value={l.cost ?? ''} onChange={e => set(i, { cost: e.target.value })} aria-label="Costo de esta línea en pesos (opcional)" placeholder="Costo $ (opcional)" />}
               <button type="button" className="link-btn danger" onClick={() => del(i)} disabled={lines.length === 1 || l.locked}>Quitar</button>
               {l.item_id && max != null && !l.locked && <small className="line-hint">Máximo {max}</small>}
             </div>
@@ -1742,14 +1974,12 @@ function RestockModal({ restock, setRestock, items, onClose, onSubmit }) {
   return (
     <Modal title="Registrar ingreso" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar ingreso">
       <div className="form-grid">
-        <label className="full-width">Material *
-          <MaterialPicker options={options} value={restock.item_id} onChange={v => set('item_id', v)} rightLabel="En Rosario" hideZero={false} required />
-        </label>
-        <label>Cantidad *<input type="number" min="1" required value={restock.qty} onChange={e => set('qty', e.target.value)} /></label>
         <label>Origen<select value={restock.source} onChange={e => set('source', e.target.value)}><option value="proveedor">Proveedor</option><option value="otro">Otro (aclarar en notas)</option></select></label>
-        <label>Costo total en pesos (opcional)<input type="number" min="0" step="0.01" placeholder="Lo que costó toda la compra" value={restock.cost} onChange={e => set('cost', e.target.value)} /></label>
-        <label className="full-width">Notas<input value={restock.notes} onChange={e => set('notes', e.target.value)} placeholder="Remito, proveedor, etc." /></label>
+        <label>Notas<input value={restock.notes} onChange={e => set('notes', e.target.value)} placeholder="Remito, proveedor, etc." /></label>
       </div>
+      <h3 className="sub">Materiales que entraron</h3>
+      <LinesEditor lines={restock.lines} onChange={lines => set('lines', lines)} options={options} rightLabel="En Rosario" hideZero={false} withCost />
+      <p className="muted small">Cargá todo lo que figura en el remito de una vez. El costo de cada línea es opcional (lo que costó esa línea completa).</p>
       <p className="muted small">¿Es una devolución de un depósito o concesionario? No la cargues acá: usá «Devolver a Rosario» en Depósitos y puntos, así también se descuenta de donde vuelve.</p>
     </Modal>
   );
@@ -1761,7 +1991,7 @@ function WithdrawalModal({ withdrawal, setWithdrawal, items, reserved, onClose, 
   return (
     <Modal title="Registrar retiro" onClose={onClose} onSubmit={onSubmit} submitLabel="Guardar retiro">
       <div className="form-grid">
-        <label>Motivo<select value={withdrawal.reason_type} onChange={e => set('reason_type', e.target.value)}>{REASONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+        <label>Motivo *<select required value={withdrawal.reason_type} onChange={e => set('reason_type', e.target.value)}><option value="">Elegí el motivo…</option>{REASONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         {esIncidencia && <>
           <label>Apellido cliente *<input required value={withdrawal.recipient_last_name} onChange={e => set('recipient_last_name', e.target.value)} /></label>
           <label>Patente *<input required value={withdrawal.vehicle_plate} onChange={e => set('vehicle_plate', e.target.value.toUpperCase())} /></label>
@@ -1877,7 +2107,7 @@ function EventModal({ modal, setModal, items, availableOf, onClose, onSubmit }) 
         </>
       )}
       <label className="full-width notes-label">Notas<input value={modal.notes} onChange={e => set('notes', e.target.value)} placeholder="Opcional" /></label>
-      <p className="muted small">{editing ? 'Lo que ya se entregó queda bloqueado; podés cambiar fechas, responsable, notas y lo que todavía está solo reservado.' : 'Guardar reserva los elementos para esas fechas: nadie más puede usarlos en otro evento que se pise. El stock sale del DEPOSITO MARKETING ROSARIO recién cuando tocás «Entregar materiales».'}</p>
+      <p className="muted small">{editing ? 'Lo que ya se entregó queda bloqueado; podés cambiar fechas, responsable, notas y lo que todavía está solo reservado.' : 'Guardar reserva los elementos para esas fechas: nadie más puede usarlos en otro evento que se pise. El stock sale del Depósito Rosario recién cuando tocás «Entregar materiales».'}</p>
     </Modal>
   );
 }
@@ -1886,7 +2116,7 @@ function WithdrawEventModal({ modal, setModal, onClose, onSubmit }) {
     <Modal title="Entregar materiales del evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Entregar y descontar stock">
       <p><strong>{modal.event.event_name}</strong></p>
       <label className="full-width notes-label">Quién retira los materiales *<input required value={modal.by} onChange={e => setModal(p => ({ ...p, by: e.target.value }))} placeholder="Nombre y apellido" /></label>
-      <p className="muted small">Los elementos reservados salen ahora del DEPOSITO MARKETING ROSARIO. Después podés imprimir el retiro para que lo firmen.</p>
+      <p className="muted small">Los elementos reservados salen ahora del Depósito Rosario. Después podés imprimir el retiro para que lo firmen.</p>
     </Modal>
   );
 }
@@ -1895,7 +2125,7 @@ function ReturnEventModal({ modal, setModal, onClose, onSubmit }) {
   const setLine = (i, v) => setModal(p => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, qty_returned: v } : l)) }));
   return (
     <Modal title="Registrar regreso del evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Confirmar regreso">
-      <p className="muted small">Indicá cuánto volvió de cada elemento. Lo que vuelve se suma al DEPOSITO MARKETING ROSARIO.</p>
+      <p className="muted small">Indicá cuánto volvió de cada elemento. Lo que vuelve se suma al Depósito Rosario.</p>
       <div className="send-lines">
         {modal.lines.map((l, i) => (
           <div key={l.id} className="send-line">
@@ -1931,7 +2161,7 @@ function retiroHtml(event, rows) {
 </style>
 <div class="retiro">
 <h1>NEOSTAR · Retiro de elementos de marketing</h1>
-<p class="sub">DEPOSITO MARKETING ROSARIO · Nº ${esc(String(event.id).slice(0, 8).toUpperCase())} · Emitido el ${today}</p>
+<p class="sub">Depósito Rosario · Nº ${esc(String(event.id).slice(0, 8).toUpperCase())} · Emitido el ${today}</p>
 <table class="info"><tr><td>Evento</td><td colspan="3">${esc(event.event_name)}</td></tr>
 <tr><td>Marca</td><td>${esc(event.brand || '—')}</td><td>Responsable</td><td>${esc(event.carried_by || '')}</td></tr>
 <tr><td>Fecha de inicio</td><td>${fmtDate((event.start_date || event.event_date) + 'T12:00:00')}</td><td>Fecha de fin</td><td>${fmtDate((event.end_date || event.event_date) + 'T12:00:00')}</td></tr></table>
@@ -2062,7 +2292,7 @@ function PointWithdrawModal({ modal, setModal, onClose, onSubmit }) {
       <p><strong>{modal.name}</strong> · disponible: {modal.available}</p>
       <div className="form-grid">
         <label>Cantidad *<input type="number" min="1" max={modal.available} required value={modal.qty} onChange={e => set('qty', e.target.value)} /></label>
-        <label>Motivo<select value={modal.reason_type} onChange={e => set('reason_type', e.target.value)}>{REASONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+        <label>Motivo *<select required value={modal.reason_type} onChange={e => set('reason_type', e.target.value)}><option value="">Elegí el motivo…</option>{REASONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         {esIncidencia && <>
           <label>Apellido cliente *<input required value={modal.recipient_last_name} onChange={e => set('recipient_last_name', e.target.value)} /></label>
           <label>Patente *<input required value={modal.vehicle_plate} onChange={e => set('vehicle_plate', e.target.value.toUpperCase())} /></label>
@@ -2115,5 +2345,295 @@ function AdjustModal({ modal, setModal, willReview, onClose, onSubmit }) {
       {willReview && !modal.isRosario && <p className="muted small">Marketing va a revisar este ajuste.</p>}
       <p className="muted small">Queda registrado quién lo hizo, cuándo y de cuánto a cuánto.</p>
     </Modal>
+  );
+}
+
+/* ---------------- Ronda 3: conteo físico, importación, ficha, vista general ---------------- */
+
+function SegControl({ value, onChange, options }) {
+  return (
+    <div className="seg" role="tablist">
+      {options.map(([k, label]) => (
+        <button key={k} type="button" role="tab" aria-selected={value === k} className={value === k ? 'on' : ''} onClick={() => onChange(k)}>{label}</button>
+      ))}
+    </div>
+  );
+}
+
+/* Conteo físico: se carga lo contado y se guarda todo junto con un solo motivo; solo quedan registradas las diferencias */
+function CountModal({ modal, setModal, items, destStock, destinations, reserved, canPick, onClose, onSubmit }) {
+  const set = (patch) => setModal(p => ({ ...p, ...patch }));
+  const dest = modal.destination_id || '';
+  const counts = modal.counts || {};
+  const rows = useMemo(() => {
+    const byId = Object.fromEntries(items.map(i => [i.id, i]));
+    const list = !dest
+      ? items.map(i => ({ id: i.id, label: itemLabel(i), cat: i.category, sys: i.stock_nucleo || 0, res: reserved?.[i.id] || 0 }))
+      : destStock.filter(r => r.destination_id === dest && byId[r.item_id]).map(r => ({ id: r.item_id, label: itemLabel(byId[r.item_id]), cat: byId[r.item_id].category, sys: r.qty, res: 0 }));
+    return list.sort((a, b) => a.label.localeCompare(b.label));
+  }, [dest, items, destStock, reserved]);
+  const toks = norm((modal.q || '').trim()).split(/\s+/).filter(Boolean);
+  const visible = rows.filter(r => !toks.length || toks.every(t => norm(`${r.label} ${r.cat}`).includes(t)));
+  const has = (r) => counts[r.id] !== undefined && counts[r.id] !== '';
+  const nCounted = rows.filter(has).length;
+  const nDiff = rows.filter(r => has(r) && Number(counts[r.id]) !== r.sys).length;
+  const setCount = (id, v) => set({ counts: { ...counts, [id]: v }, confirmLow: false });
+  const fillBlank = () => {
+    const next = { ...counts };
+    visible.forEach(r => { if (!has(r)) next[r.id] = String(r.sys); });
+    set({ counts: next });
+  };
+  const depots = destinations.filter(d => d.is_depot);
+  const dealers = destinations.filter(d => !d.is_depot);
+  return (
+    <Modal title="Conteo físico" wide onClose={onClose} onSubmit={onSubmit} submitLabel={nDiff ? `Guardar conteo (${nDiff} diferencia${nDiff === 1 ? '' : 's'})` : 'Guardar conteo'}>
+      <p className="muted small">Contá lo que hay en el estante y cargalo en «Contado». Dejá en blanco lo que no contaste. Al guardar, solo se registran los materiales cuya cantidad cambió, todos con el mismo motivo. También sirve para cargar el stock definitivo.</p>
+      <div className="form-grid">
+        {canPick
+          ? <label>Qué depósito contás
+              <select value={dest} onChange={e => set({ destination_id: e.target.value, counts: {}, q: '', confirmLow: false })}>
+                <option value="">{ROSARIO}</option>
+                {depots.length > 0 && <optgroup label="Depósitos">{depots.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>}
+                {dealers.length > 0 && <optgroup label="Concesionarios">{dealers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>}
+              </select></label>
+          : <p className="full-width"><strong>{destinations.find(d => d.id === dest)?.name || 'Mi depósito'}</strong></p>}
+        <label>Motivo del conteo *<input required value={modal.reason || ''} onChange={e => set({ reason: e.target.value })} placeholder="Ej: conteo mensual, carga del stock definitivo" /></label>
+        <label className="full-width">Buscar material<input value={modal.q || ''} onChange={e => set({ q: e.target.value })} placeholder="Nombre, marca o categoría…" /></label>
+      </div>
+      <div className="count-tools">
+        <button type="button" className="secondary-btn small-btn" onClick={fillBlank}>Completar lo que no toqué con lo que dice el sistema</button>
+        <span className="muted small">{nCounted} de {rows.length} contados · {nDiff} con diferencia</span>
+      </div>
+      <div className="table-scroll">
+        <table className="count-table">
+          <thead><tr><th>Material</th><th>Sistema</th><th>Contado</th><th>Diferencia</th></tr></thead>
+          <tbody>
+            {visible.slice(0, 400).map(r => {
+              const d = has(r) ? Number(counts[r.id]) - r.sys : null;
+              const low = !dest && has(r) && r.res > 0 && Number(counts[r.id]) < r.res;
+              return (
+                <tr key={r.id}>
+                  <td><strong>{r.label}</strong><small>{r.cat}{r.res > 0 ? ` · reservado para eventos: ${r.res}` : ''}</small></td>
+                  <td>{r.sys}</td>
+                  <td><input type="number" min="0" step="1" aria-label={`Contado de ${r.label}`} value={counts[r.id] ?? ''} onChange={e => setCount(r.id, e.target.value)} /></td>
+                  <td className={d == null || d === 0 ? '' : d > 0 ? 'ok' : 'warn'}>{d == null ? '—' : d === 0 ? '=' : (d > 0 ? `+${d}` : `−${Math.abs(d)}`)}{low && <small className="warn">menos que lo reservado</small>}</td>
+                </tr>
+              );
+            })}
+            {!visible.length && <tr><td colSpan="4" className="muted">{rows.length ? 'Ningún material coincide con la búsqueda.' : (dest ? 'Este depósito todavía no tiene stock registrado. Cargalo con «+ Cargar stock» en Depósitos y puntos o con «Importar planilla».' : 'No hay materiales.')}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {visible.length > 400 && <p className="muted small">Se muestran 400 de {visible.length}: buscá para ver el resto.</p>}
+      {modal.confirmLow && <p className="warn small">Algunas cantidades quedan por debajo de lo reservado para eventos. Si es correcto, tocá «Guardar conteo» otra vez para confirmar.</p>}
+    </Modal>
+  );
+}
+
+/* Importar materiales desde una planilla guardada como CSV */
+const IMPORT_HEADERS = ['Material', 'Categoría', 'Marca', 'Depósito', 'Cantidad', 'Mínimo'];
+const IMPORT_COLS = { name: ['material', 'nombre', 'producto'], category: ['categoria'], brand: ['marca'], destination: ['deposito', 'ubicacion', 'destino'], qty: ['cantidad', 'stock', 'unidades'], min: ['minimo', 'min', 'stock minimo'] };
+function ImportModal({ categories, destinations, items, onClose, onSubmit }) {
+  const [fileName, setFileName] = useState('');
+  const [rows, setRows] = useState([]);
+  const [fileErr, setFileErr] = useState('');
+  const catByNorm = useMemo(() => Object.fromEntries(categories.map(c => [norm(c.name), c.name])), [categories]);
+  const brandByNorm = useMemo(() => Object.fromEntries(['Genérico', ...BRANDS].map(b => [norm(b), b])), []);
+  const depots = destinations.filter(d => d.is_depot);
+  const existing = useMemo(() => new Set(items.map(i => `${norm(i.name.trim())}|${i.brand || 'Genérico'}`)), [items]);
+  const isRosario = (t) => ['', 'rosario', 'deposito rosario', 'deposito marketing rosario'].includes(norm(t.trim()));
+
+  const template = () => downloadCsv('plantilla-materiales.csv', IMPORT_HEADERS, [['BORRAR ESTA FILA (ejemplo)', '(una categoría de la lista)', 'Kia', 'Rosario', '100', '20']]);
+  const onFile = async (e) => {
+    const f = e.target.files?.[0];
+    setRows([]); setFileErr(''); setFileName(f ? f.name : '');
+    if (!f) return;
+    if (!/\.csv$|\.txt$/i.test(f.name)) { setFileErr('Guardá la planilla desde Excel como «CSV (delimitado por comas)» y subí ese archivo.'); return; }
+    if (f.size > 1024 * 1024) { setFileErr('El archivo es muy grande (máximo 1 MB).'); return; }
+    const table = parseCsv(await f.text());
+    if (table.length < 2) { setFileErr('La planilla no tiene filas de datos.'); return; }
+    const head = table[0].map(h => norm(h.trim()));
+    const col = {};
+    Object.entries(IMPORT_COLS).forEach(([k, names]) => { col[k] = head.findIndex(h => names.includes(h)); });
+    if (col.name < 0 || col.category < 0) { setFileErr('Faltan las columnas «Material» y «Categoría». Bajá la plantilla para ver el formato.'); return; }
+    const data = table.slice(1);
+    if (data.length > 500) { setFileErr('Importá de a 500 filas como máximo (el archivo tiene ' + data.length + ').'); return; }
+    const seen = new Set();
+    setRows(data.map((r, i) => {
+      const get = (k) => (col[k] >= 0 ? (r[col[k]] || '').trim() : '');
+      const o = { line: i + 2, name: get('name'), catRaw: get('category'), brandRaw: get('brand'), destRaw: get('destination'), qtyRaw: get('qty'), minRaw: get('min'), errors: [], notes: [] };
+      if (!o.name) o.errors.push('falta el material');
+      o.category = catByNorm[norm(o.catRaw)];
+      if (!o.category) o.errors.push(`categoría «${o.catRaw || 'vacía'}» no existe`);
+      o.brand = o.brandRaw ? brandByNorm[norm(o.brandRaw)] : 'Genérico';
+      if (!o.brand) o.errors.push(`marca «${o.brandRaw}» no válida`);
+      const num = (t) => (t === '' ? 0 : /^\d+$/.test(t) ? Number(t) : NaN);
+      o.qty = num(o.qtyRaw); o.min = num(o.minRaw);
+      if (Number.isNaN(o.qty)) o.errors.push('cantidad inválida');
+      if (Number.isNaN(o.min)) o.errors.push('mínimo inválido');
+      if (isRosario(o.destRaw)) o.dest = '';
+      else {
+        const hit = depots.filter(d => norm(d.name).includes(norm(o.destRaw.trim())));
+        if (hit.length === 1) o.dest = hit[0].id; else o.errors.push(`depósito «${o.destRaw}» no se reconoce`);
+        o.destName = hit.length === 1 ? hit[0].name : '';
+      }
+      const key = `${norm(o.name)}|${o.brand}|${o.dest ?? '?'}`;
+      if (seen.has(key)) o.notes.push('repetida en la planilla: se omite'); seen.add(key);
+      if (o.dest === '' && o.brand && existing.has(`${norm(o.name)}|${o.brand}`)) o.notes.push('ya existe: no se cambia su stock');
+      return o;
+    }));
+  };
+  const nErr = rows.filter(r => r.errors.length).length;
+  const submit = (e) => {
+    e.preventDefault();
+    if (!rows.length || nErr) return;
+    onSubmit(rows.map(r => ({ name: r.name, category: r.category, brand: r.brand, destination: r.dest === '' ? 'Rosario' : r.destName, destination_id: r.dest || null, qty: r.qty, min: r.min })));
+  };
+  return (
+    <Modal title="Importar materiales desde planilla" wide onClose={onClose} onSubmit={submit} submitLabel={rows.length && !nErr ? `Importar ${rows.length} fila(s)` : 'Importar'}>
+      <ol className="import-steps">
+        <li><button type="button" className="secondary-btn small-btn" onClick={template}>Bajar plantilla</button> y completala en Excel: Material, Categoría, Marca, Depósito (Rosario, Santa Fe o Cañada), Cantidad y Mínimo. Borrá la fila de ejemplo.</li>
+        <li>Guardala como <strong>CSV (delimitado por comas)</strong> y subila acá: <input type="file" accept=".csv,.txt,text/csv" onChange={onFile} /></li>
+        <li>Revisá la vista previa. Si todo está bien, tocá «Importar».</li>
+      </ol>
+      <p className="muted small">Categorías válidas: {categories.map(c => c.name).join(', ')}. Marcas: Genérico, {BRANDS.join(', ')}. Importar solo <strong>crea</strong> materiales y carga stock inicial: lo que ya existe no se pisa, así que importar dos veces no duplica stock.</p>
+      {fileErr && <p className="warn">{fileErr}</p>}
+      {rows.length > 0 && (
+        <>
+          <p><strong>{fileName}</strong>: {rows.length} fila(s){nErr ? ` · ${nErr} con errores (corregilas en la planilla y volvé a subirla)` : ' · sin errores'}</p>
+          <div className="table-scroll">
+            <table className="count-table">
+              <thead><tr><th>Fila</th><th>Material</th><th>Categoría</th><th>Marca</th><th>Depósito</th><th>Cant.</th><th>Mín.</th><th>Estado</th></tr></thead>
+              <tbody>
+                {rows.slice(0, 200).map(r => (
+                  <tr key={r.line} className={r.errors.length ? 'row-bad' : ''}>
+                    <td>{r.line}</td><td>{r.name}</td><td>{r.category || r.catRaw}</td><td>{r.brand || r.brandRaw}</td>
+                    <td>{r.dest === '' ? ROSARIO : (r.destName || r.destRaw)}</td><td>{Number.isNaN(r.qty) ? r.qtyRaw : r.qty}</td><td>{Number.isNaN(r.min) ? r.minRaw : r.min}</td>
+                    <td>{r.errors.length ? <span className="warn">{r.errors.join('; ')}</span> : r.notes.length ? <span className="muted">{r.notes.join('; ')}</span> : <span className="ok">OK</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {rows.length > 200 && <p className="muted small">Se muestran 200 de {rows.length} filas (se importan todas).</p>}
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/* Ficha del material: stock en cada lugar, lo reservado para eventos, últimos movimientos y fotos */
+function ItemSheet({ item, reserved, destStock, destinations, openEvents, history, isStaff, onEdit, onAdjust, onDelete, onPhotos, onClose }) {
+  const res = reserved?.[item.id] || 0;
+  const where = destStock.filter(r => r.item_id === item.id && r.qty > 0).map(r => ({ ...r, dest: destinations.find(d => d.id === r.destination_id) })).filter(r => r.dest)
+    .sort((a, b) => (b.dest.is_depot ? 1 : 0) - (a.dest.is_depot ? 1 : 0) || a.dest.name.localeCompare(b.dest.name));
+  const total = (item.stock_nucleo || 0) + where.reduce((a, r) => a + r.qty, 0);
+  const act = (fn) => () => fn(item);
+  return (
+    <Modal title={item.name} wide onClose={onClose} onSubmit={(e) => e.preventDefault()} hideSubmit cancelLabel="Cerrar"
+      extraActions={isStaff ? <>
+        <button type="button" className="secondary-btn" onClick={act(onEdit)}>Editar</button>
+        <button type="button" className="secondary-btn" onClick={act(onAdjust)}>Ajustar stock</button>
+        <button type="button" className="secondary-btn danger-btn" onClick={act(onDelete)}>Eliminar o archivar</button>
+      </> : null}>
+      <p className="muted">{item.brand || 'Genérico'} · {item.category} · {item.kind === 'equipamiento' ? 'Equipamiento (se presta y vuelve)' : 'Consumible'}</p>
+      {item.photo_urls?.length > 0 && (
+        <div className="sheet-photos">
+          {item.photo_urls.slice(0, 4).map(u => <button type="button" key={u} className="thumb-btn" onClick={() => onPhotos(item)} title="Ver fotos"><Thumb url={u} alt={item.name} /></button>)}
+        </div>
+      )}
+      <div className="sheet-tiles">
+        <div><strong>{item.stock_nucleo || 0}</strong><span>En {ROSARIO}</span></div>
+        <div><strong>{res}</strong><span>Reservado para eventos</span></div>
+        <div><strong>{Math.max(0, (item.stock_nucleo || 0) - res)}</strong><span>Disponible hoy</span></div>
+        <div><strong>{total}</strong><span>Total en todos lados</span></div>
+      </div>
+      <h3 className="sub">Stock en depósitos y concesionarios</h3>
+      {where.length ? (
+        <table><thead><tr><th>Lugar</th><th>Cantidad</th></tr></thead>
+          <tbody>{where.map(r => <tr key={r.destination_id}><td>{r.dest.name}</td><td>{r.qty}</td></tr>)}</tbody></table>
+      ) : <p className="muted small">No hay unidades en depósitos ni concesionarios.</p>}
+      {openEvents.length > 0 && (
+        <>
+          <h3 className="sub">Reservado para eventos</h3>
+          <table><thead><tr><th>Evento</th><th>Fechas</th><th>Cantidad</th></tr></thead>
+            <tbody>{openEvents.map(x => <tr key={x.id}><td>{x.ev.event_name}</td><td>{fmtRange(x.ev)}</td><td>{x.qty_allocated}</td></tr>)}</tbody></table>
+        </>
+      )}
+      <h3 className="sub">Últimos movimientos</h3>
+      {history.length ? (
+        <table><thead><tr><th>Fecha</th><th>Tipo</th><th>Cant.</th><th>Detalle</th></tr></thead>
+          <tbody>{history.map(h => <tr key={h.id}><td>{fmtDate(h.at)}</td><td>{h.tipo}</td><td>{h.qty}</td><td>{h.detalle || '—'}</td></tr>)}</tbody></table>
+      ) : <p className="muted small">Todavía no tiene movimientos.</p>}
+    </Modal>
+  );
+}
+
+/* Vista general: una tarjeta por lugar y una tabla de materiales × depósitos */
+function OverviewView({ destinations, destStock, items, pointStatus, shipments, onOpen, toggle }) {
+  const [q, setQ] = useState('');
+  const [cat, setCat] = useState('Todas');
+  const [onlyStock, setOnlyStock] = useState(true);
+  const depots = destinations.filter(d => d.is_depot && d.active !== false);
+  const dealers = destinations.filter(d => !d.is_depot && d.active !== false);
+  const cards = [...depots, ...dealers].map(d => {
+    const rs = destStock.filter(r => r.destination_id === d.id && r.qty > 0);
+    const last = shipments.filter(x => x.destination_id === d.id).map(x => x.created_at).sort().pop();
+    const alerts = d.is_depot ? pointStatus.filter(p => p.destination_id === d.id && p.status !== 'ok').length : 0;
+    return { d, mats: rs.length, units: rs.reduce((a, r) => a + r.qty, 0), alerts, last };
+  });
+  const dealerIds = new Set(dealers.map(d => d.id));
+  const cats = [...new Set(items.map(i => i.category))].sort();
+  const toks = norm(q.trim()).split(/\s+/).filter(Boolean);
+  const rows = items.map(i => {
+    const by = Object.fromEntries(depots.map(d => [d.id, 0]));
+    let dl = 0;
+    destStock.filter(r => r.item_id === i.id).forEach(r => { if (r.destination_id in by) by[r.destination_id] += r.qty; else if (dealerIds.has(r.destination_id)) dl += r.qty; });
+    const total = (i.stock_nucleo || 0) + Object.values(by).reduce((a, b) => a + b, 0) + dl;
+    return { i, by, dl, total };
+  }).filter(r => (!onlyStock || r.total > 0) && (cat === 'Todas' || r.i.category === cat) && (!toks.length || toks.every(t => norm(`${r.i.name} ${r.i.brand || ''}`).includes(t))))
+    .sort((a, b) => norm(a.i.name).localeCompare(norm(b.i.name)) || String(a.i.brand).localeCompare(String(b.i.brand)));
+  return (
+    <>
+      <section className="card" style={{ marginBottom: 18 }}>{toggle}</section>
+      <section className="card" style={{ marginBottom: 18 }}>
+        <h2>Resumen por lugar</h2>
+        <div className="overview-cards">
+          {cards.map(({ d, mats, units, alerts, last }) => (
+            <button type="button" key={d.id} className="overview-card" onClick={() => onOpen(d.id)}>
+              <strong>{d.name}</strong>
+              <span>{mats} material(es) · {units} unidades</span>
+              <span className={alerts ? 'warn' : 'muted'}>{d.is_depot ? (alerts ? `${alerts} para reponer` : 'Sin alertas') : 'Concesionario'}</span>
+              <small>{last ? `Último envío: ${fmtDate(last)}` : 'Sin envíos'}</small>
+            </button>
+          ))}
+        </div>
+      </section>
+      <section className="card">
+        <h2>Materiales × depósitos</h2>
+        <div className="filters-row">
+          <label className="filter-label">Buscar<input value={q} onChange={e => setQ(e.target.value)} placeholder="Nombre o marca…" /></label>
+          <label className="filter-label">Categoría<select value={cat} onChange={e => setCat(e.target.value)}><option>Todas</option>{cats.map(c => <option key={c}>{c}</option>)}</select></label>
+          <label className="check-filter"><input type="checkbox" checked={onlyStock} onChange={e => setOnlyStock(e.target.checked)} /> Solo con stock</label>
+        </div>
+        <div className="table-scroll">
+          <table className="matrix">
+            <thead><tr><th>Material</th><th>{ROSARIO}</th>{depots.map(d => <th key={d.id}>{d.name}</th>)}<th>Concesionarios</th><th>Total</th></tr></thead>
+            <tbody>
+              {rows.slice(0, 300).map(({ i, by, dl, total }) => (
+                <tr key={i.id}>
+                  <td><strong>{i.name}</strong><small>{i.brand && i.brand !== 'Genérico' ? i.brand : ''}</small></td>
+                  <td>{i.stock_nucleo || 0}</td>
+                  {depots.map(d => <td key={d.id}>{by[d.id] || 0}</td>)}
+                  <td>{dl}</td><td><strong>{total}</strong></td>
+                </tr>
+              ))}
+              {!rows.length && <tr><td colSpan={depots.length + 4} className="muted">Ningún material coincide.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {rows.length > 300 && <p className="muted small">Se muestran 300 de {rows.length}: buscá para ver el resto.</p>}
+      </section>
+    </>
   );
 }
