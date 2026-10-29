@@ -152,3 +152,21 @@ table.matrix td small { display: block; color: #5b6478; font-size: 12px; }
   .sheet-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar-actions { width: 100%; }
 }
+
+/* ---------- Eventos: estado junto al nombre, cancelado bien visible, aviso de evento terminado ---------- */
+.event-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 4px; }
+.event-title h3 { margin: 0; }
+.chip.event-status { font-size: 13px; padding: 4px 12px; }
+.chip.cerrado.event-status { background: #e6f4ea; color: #14602b; border: 1px solid #9fd3ad; }
+.chip.cancelado.event-status { background: #d62828; color: #fff; border: 2px solid #a11b1b; font-size: 17px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 5px 16px; }
+.event-card.is-cancelled { background: #fff0f0; border-color: #d62828; box-shadow: 4px 4px 0 #f3b4b4; }
+.event-card.is-cancelled:hover { box-shadow: 4px 4px 0 #d62828; }
+.event-card.is-cancelled h3 { color: #8f1a1a; }
+.event-card.is-ended { border-color: #e0a100; }
+.realize-banner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; margin: 6px 0 10px; padding: 10px 12px; border-radius: 10px; background: #fff4d6; border: 2px solid #e0a100; color: #5c3a00; font-weight: 600; font-size: 14px; }
+.realize-card { border: 2px solid #e0a100; background: #fffaf0; box-shadow: 6px 6px 0 #e0a100; margin-bottom: 22px; }
+.realize-card h2 { color: #8a4b00; }
+
+/* Menú desplegable: nunca más ancho que la pantalla */
+.menu-list { max-width: calc(100vw - 24px); }
+.menu-list button { white-space: normal; }

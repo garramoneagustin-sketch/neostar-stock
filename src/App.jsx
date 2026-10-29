@@ -734,7 +734,29 @@ export default function App() {
       p_event_id: m.event.id,
       p_returns: m.lines.map(l => ({ event_item_id: l.id, qty_returned: Number(l.qty_returned) })),
       p_signed_by: m.by?.trim() || null
-    }), 'Regreso registrado. Lo devuelto volvió al Depósito Rosario.');
+    }), m.realize ? 'Evento marcado como realizado. Lo devuelto volvió al Depósito Rosario.' : 'Regreso registrado: el evento quedó como realizado. Lo devuelto volvió al Depósito Rosario.');
+  }
+
+  function openReturnEvent(ev, realize = false) {
+    setError(''); setNotice('');
+    setModal({
+      type: 'returnEvent', event: ev, by: '', realize,
+      lines: eventItems.filter(ei => ei.event_id === ev.id && ei.remito_salida_date && !ei.remito_llegada_ok)
+        .map(ei => ({ id: ei.id, name: ei.items?.name, qty: ei.qty_allocated, qty_returned: ei.qty_allocated }))
+    });
+  }
+
+  // «Marcar como realizado»: si hay materiales afuera se registra su regreso (así vuelve el stock y el evento queda realizado)
+  function realizeEvent(ev) {
+    const lines = eventItems.filter(ei => ei.event_id === ev.id);
+    const ri = realizeInfo(lines);
+    if (!ri.can) { setNotice(''); setError(ri.text); return; }
+    if (ri.needsReturn) { openReturnEvent(ev, true); return; }
+    setModal({
+      type: 'confirm', title: 'Marcar como realizado', yes: 'Sí, marcar como realizado',
+      text: `¿Confirmás que «${ev.event_name}» se realizó?`,
+      onYes: () => run(supabase.rpc('close_event', { p_event_id: ev.id }), 'Evento marcado como realizado.')
+    });
   }
 
   function cancelEvent(ev) {
@@ -765,6 +787,8 @@ export default function App() {
 
   const inTransit = useMemo(() => shipments.filter(x => x.status === 'en_transito' || x.status === 'parcial'), [shipments]);
   const diffShipments = useMemo(() => shipments.filter(x => x.status === 'con_diferencia'), [shipments]);
+  // Eventos que ya terminaron y siguen abiertos: aviso para marcarlos como realizados
+  const endedEvents = useMemo(() => events.filter(eventEnded).length, [events]);
 
   const centralAlerts = centralStatus;
 
@@ -833,7 +857,7 @@ export default function App() {
         ['__sec', 'Operar'],
         ['ingresos', 'Ingresos'], ['retiros', 'Retiros'],
         ['movimientos', 'Envíos', inTransit.length + diffShipments.length, diffShipments.length > 0],
-        ['eventos', 'Eventos'],
+        ['eventos', 'Eventos', endedEvents, endedEvents > 0],
         ['__sec', 'Consultar'],
         ['stock', 'Materiales'], ['depositos', 'Depósitos y puntos'], ['historial', 'Historial'],
         ...(role === 'admin' ? [['__sec', 'Administrar'], ['usuarios', 'Usuarios']] : [])
@@ -921,7 +945,7 @@ export default function App() {
         {notice && <div className="notice-banner" role="status">{notice}</div>}
 
         {loading ? <div className="skeleton-wrap" aria-busy="true"><div className="skeleton sk-row" /><div className="skeleton sk-row" /><div className="skeleton sk-block" /></div> :
-          tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} diffs={diffShipments} linesByShipment={linesByShipment} canResolve={isStaff} onResolve={openResolve} events={events} history={history} reviewAdj={reviewAdj} onAck={ackMovement} busy={busy} onGo={goTab}
+          tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} diffs={diffShipments} linesByShipment={linesByShipment} canResolve={isStaff} onResolve={openResolve} events={events} history={history} reviewAdj={reviewAdj} onAck={ackMovement} busy={busy} onGo={goTab} onRealize={realizeEvent}
             canOperate={isStaff} availOf={(id) => Math.max(0, (itemById[id]?.stock_nucleo || 0) - (reserved[id] || 0))} onBuy={buyFor} onSendFor={sendFor}
             onSetMin={(p) => setModal({ type: 'pmin', destination_id: p.destination_id, item_id: p.item_id, name: p.item_name, min: p.min_qty })} /> :
           tab === 'stock' ? <StockTable items={filteredItems} totalItems={items.length} categories={categories} inDepots={inDepots} reserved={reserved} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter} photoFilter={photoFilter} setPhotoFilter={setPhotoFilter} allItems={items}
@@ -962,7 +986,7 @@ export default function App() {
                 : <MovementTable rows={shipments} lines={linesByShipment} canResolve={isStaff} onResolve={openResolve} destById={destById} />}
             </>
           ) :
-          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} itemById={itemById} isStaff={isStaff} onNew={() => { setError(''); setNotice(''); setModal(emptyEvent()); }} onPrint={(ev) => setModal({ type: 'retiro', event: ev })} onWithdraw={(ev) => setModal({ type: 'withdrawEvent', event: ev, by: ev.carried_by || '' })} onReturn={(ev) => setModal({ type: 'returnEvent', event: ev, by: '', lines: eventItems.filter(ei => ei.event_id === ev.id && ei.remito_salida_date && !ei.remito_llegada_ok).map(ei => ({ id: ei.id, name: ei.items?.name, qty: ei.qty_allocated, qty_returned: ei.qty_allocated })) })} onCancel={cancelEvent} onEdit={editEvent} onDuplicate={duplicateEvent} /> :
+          tab === 'eventos' ? <EventsTable events={events} eventItems={eventItems} itemById={itemById} isStaff={isStaff} onNew={() => { setError(''); setNotice(''); setModal(emptyEvent()); }} onPrint={(ev) => setModal({ type: 'retiro', event: ev })} onWithdraw={(ev) => setModal({ type: 'withdrawEvent', event: ev, by: ev.carried_by || '' })} onReturn={(ev) => openReturnEvent(ev)} onRealize={realizeEvent} onCancel={cancelEvent} onEdit={editEvent} onDuplicate={duplicateEvent} /> :
           tab === 'historial' ? <HistoryTab rows={history} destinations={destinations} loaded={{ mov: movements.length, ret: withdrawals.length, ing: restocks.length }} canAck={isStaff} /> : null
         }
       </main>
@@ -1065,12 +1089,13 @@ function NoAccess({ onSignOut, message }) {
   );
 }
 
-function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, diffs, linesByShipment, canResolve, onResolve, events, history, reviewAdj, onAck, busy, onGo, canOperate, availOf, onBuy, onSendFor, onSetMin }) {
+function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, diffs, linesByShipment, canResolve, onResolve, events, history, reviewAdj, onAck, busy, onGo, onRealize, canOperate, availOf, onBuy, onSendFor, onSetMin }) {
   const urgent = inTransit.filter(m => daysSince(m.created_at) > 5);
   const t = todayStr();
   const soon = addDays(t, 3);
+  const ended = events.filter(eventEnded).map(e => ({ e, ri: realizeInfo(eventItems.filter(l => l.event_id === e.id)) }));
   const evTodo = events.map(e => ({ e, st: eventState(e, eventItems.filter(l => l.event_id === e.id)) }))
-    .filter(({ e, st }) => st && (st.alert || (st.cls === 'reservado' && (e.start_date || e.event_date) <= soon)))
+    .filter(({ e, st }) => st && !st.ended && (st.alert || (st.cls === 'reservado' && (e.start_date || e.event_date) <= soon)))
     .map(({ e, st }) => (st.alert ? { e, st } : { e, st: { ...st, text: `Entrega en los próximos 3 días · ${st.text.replace('Reservado · ', '')}` } }));
   const adjs = reviewAdj || [];
   const nothing = !diffs.length && !adjs.length && !urgent.length && !evTodo.length;
@@ -1087,6 +1112,22 @@ function Dashboard({ eventItems, items, centralAlerts, pointAlerts, inTransit, d
               <ShipmentLines lines={linesByShipment[sh.id] || []} onlyProblems />
               {sh.reception_notes && <p className="obs-text">“{sh.reception_notes}”</p>}
               {canResolve && <button className="primary-btn small-btn" onClick={() => onResolve(sh)}>Resolver diferencia</button>}
+            </div>
+          ))}
+        </section>
+      )}
+
+      {ended.length > 0 && (
+        <section className="card realize-card" role="alert">
+          <h2>🔔 Eventos terminados: ¿se realizaron? ({ended.length})</h2>
+          <p className="muted small">Ya pasó la fecha de fin. Marcalos como realizados (si hay materiales afuera, registrás lo que volvió) o cancelalos si no se hicieron.</p>
+          {ended.map(({ e, ri }) => (
+            <div key={e.id} className="review-item">
+              <div className="review-head"><strong>{e.event_name}</strong><small>{fmtRange(e)}{e.carried_by ? ` · ${e.carried_by}` : ''}</small></div>
+              <p className="obs-text">{ri.text}</p>
+              {canResolve && ri.can
+                ? <button className="primary-btn small-btn" onClick={() => onRealize(e)}>Marcar como realizado</button>
+                : <button className="secondary-btn small-btn" onClick={() => onGo('eventos')}>Ir a Eventos</button>}
             </div>
           ))}
         </section>
@@ -1199,7 +1240,21 @@ function Stat({ label, value, tone, onClick }) {
 }
 function RowMenu({ children, label = '⋯', btnClass = 'menu-btn', ariaLabel = 'Más acciones', align = 'right' }) {
   const [open, setOpen] = useState(false);
+  const [side, setSide] = useState(align);
   const ref = React.useRef(null);
+  const listRef = React.useRef(null);
+  const flipped = React.useRef(false);
+  // Si el menú no entra en la pantalla hacia el lado elegido, se abre hacia el otro (pasa con la ventana angosta).
+  // Se da vuelta una sola vez por apertura, para que nunca quede rebotando.
+  React.useLayoutEffect(() => {
+    if (!open) { flipped.current = false; setSide(align); return; }
+    const el = listRef.current;
+    if (!el || flipped.current) return;
+    const r = el.getBoundingClientRect();
+    const w = document.documentElement.clientWidth;
+    if (side === 'right' && r.left < 8) { flipped.current = true; setSide('left'); }
+    else if (side === 'left' && r.right > w - 8) { flipped.current = true; setSide('right'); }
+  }, [open, side, align]);
   useEffect(() => {
     if (!open) return undefined;
     const down = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
@@ -1210,7 +1265,7 @@ function RowMenu({ children, label = '⋯', btnClass = 'menu-btn', ariaLabel = '
   return (
     <div className="row-menu" ref={ref}>
       <button type="button" className={btnClass} aria-haspopup="menu" aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen(o => !o)}>{label}</button>
-      {open && <div className={`menu-list${align === 'left' ? ' menu-left' : ''}`} role="menu" onClick={() => setOpen(false)}>{children}</div>}
+      {open && <div ref={listRef} className={`menu-list${side === 'left' ? ' menu-left' : ''}`} role="menu" onClick={() => setOpen(false)}>{children}</div>}
     </div>
   );
 }
@@ -1656,27 +1711,40 @@ function MovementTable({ rows, lines, canResolve, onResolve, destById }) {
   );
 }
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+// Evento abierto cuya fecha de fin ya pasó: hay que marcarlo como realizado (o cancelarlo)
+const eventEnd = (e) => e.end_date || e.start_date || e.event_date;
+const eventEnded = (e) => e.status === 'abierto' && !!eventEnd(e) && eventEnd(e) < todayStr();
+// Qué hace falta para marcar como realizado un evento que ya terminó
+function realizeInfo(lines) {
+  const delivered = lines.some(l => l.remito_salida_date);
+  const pendingOut = lines.some(l => !l.remito_salida_date);
+  const outNow = lines.some(l => l.remito_salida_date && !l.remito_llegada_ok);
+  if (pendingOut && !delivered) return { can: false, text: 'Terminó y los materiales figuran sin entregar. Si se hizo, tocá «Entregar materiales» y después marcalo como realizado. Si no se hizo, cancelalo.' };
+  if (pendingOut) return { can: false, text: 'Terminó, pero hay materiales que figuran sin entregar. Entregalos o sacalos con «Editar evento», y después marcalo como realizado.' };
+  return { can: true, needsReturn: outNow, text: outNow ? 'Terminó: marcalo como realizado y registrá lo que volvió.' : 'Terminó: marcalo como realizado.' };
+}
 // Estado práctico de un evento abierto y qué falta hacer
 function eventState(e, lines) {
   if (e.status !== 'abierto') return null;
   const t = todayStr();
-  const start = e.start_date || e.event_date, end = e.end_date || e.start_date || e.event_date;
+  const start = e.start_date || e.event_date;
+  if (eventEnded(e)) return { cls: 'alerta', alert: true, ended: true, text: realizeInfo(lines).text };
   const out = lines.filter(l => l.remito_salida_date);
   const pendingOut = lines.some(l => !l.remito_salida_date);
   const outNow = out.some(l => !l.remito_llegada_ok);
   if (pendingOut && start && start <= t) return { cls: 'alerta', text: start === t ? 'Empieza hoy y falta entregar los materiales' : 'Ya empezó y falta entregar los materiales', alert: true };
   if (pendingOut) return { cls: 'reservado', text: 'Reservado · próximo paso: entregar los materiales' };
-  if (outNow && end && end < t) return { cls: 'alerta', text: 'Ya terminó y faltan registrar los materiales devueltos', alert: true };
   if (outNow) return { cls: 'entregado', text: 'Entregado · próximo paso: registrar el regreso al terminar' };
   return null;
 }
-const EVENT_LABELS = { abierto: 'Abierto', cerrado: 'Cerrado', cancelado: 'Cancelado' };
+// En la base el estado sigue llamándose «cerrado»; en pantalla se muestra «Realizado»
+const EVENT_LABELS = { abierto: 'Abierto', cerrado: 'Realizado', cancelado: 'Cancelado' };
 const fmtRange = (e) => {
   const a = e.start_date || e.event_date, b = e.end_date || e.event_date;
   return a === b ? fmtDate(a + 'T12:00:00') : `${fmtDate(a + 'T12:00:00')} al ${fmtDate(b + 'T12:00:00')}`;
 };
 
-function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, onWithdraw, onReturn, onCancel, onEdit, onDuplicate }) {
+function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, onWithdraw, onReturn, onRealize, onCancel, onEdit, onDuplicate }) {
   return (
     <section className="card">
       <h2>Eventos</h2>
@@ -1686,16 +1754,26 @@ function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, on
             const lines = eventItems.filter(ei => ei.event_id === e.id);
             const pendingOut = lines.some(l => !l.remito_salida_date);
             const outNow = lines.some(l => l.remito_salida_date && !l.remito_llegada_ok);
+            const ended = eventEnded(e);
+            const ri = ended ? realizeInfo(lines) : null;
+            const st = eventState(e, lines);
             return (
-              <div key={e.id} className="event-card">
+              <div key={e.id} className={`event-card${e.status === 'cancelado' ? ' is-cancelled' : ''}${ended ? ' is-ended' : ''}`}>
                 <div className="event-head">
                   <div>
-                    <h3>{e.event_name}</h3>
+                    <div className="event-title">
+                      <h3>{e.event_name}</h3>
+                      <span className={`chip ${e.status} event-status`}>{EVENT_LABELS[e.status] || e.status}</span>
+                    </div>
                     <p className="muted small">{fmtRange(e)}{e.brand ? ` · ${e.brand}` : ''}{e.carried_by ? ` · Responsable: ${e.carried_by}` : ''}</p>
                   </div>
-                  <span className={`chip ${e.status}`}>{EVENT_LABELS[e.status] || e.status}</span>
                 </div>
-                {(() => { const st = eventState(e, lines); return st ? <span className={`evt-state ${st.cls}`}>{st.text}</span> : null; })()}
+                {ended ? (
+                  <div className="realize-banner" role="alert">
+                    <span>🔔 {ri.text}</span>
+                    {isStaff && ri.can && <button className="primary-btn small-btn" onClick={() => onRealize(e)}>Marcar como realizado</button>}
+                  </div>
+                ) : st ? <span className={`evt-state ${st.cls}`}>{st.text}</span> : null}
                 <table>
                   <thead><tr><th>Elemento</th><th>Cantidad</th><th>Entrega</th><th>Regreso</th></tr></thead>
                   <tbody>
@@ -1714,7 +1792,7 @@ function EventsTable({ events, eventItems, itemById, isStaff, onNew, onPrint, on
                   {isStaff && e.status === 'abierto' && <button className="secondary-btn small-btn" onClick={() => onEdit(e)}>Editar evento</button>}
                   {isStaff && lines.length > 0 && <button className="secondary-btn small-btn" onClick={() => onDuplicate(e)}>Duplicar para otras fechas</button>}
                   {isStaff && e.status === 'abierto' && pendingOut && <button className="primary-btn small-btn" onClick={() => onWithdraw(e)}>Entregar materiales</button>}
-                  {isStaff && e.status === 'abierto' && outNow && <button className="primary-btn small-btn" onClick={() => onReturn(e)}>Registrar regreso</button>}
+                  {isStaff && e.status === 'abierto' && outNow && !ended && <button className="primary-btn small-btn" onClick={() => onReturn(e)}>Registrar regreso</button>}
                   {isStaff && e.status === 'abierto' && !lines.some(l => l.remito_salida_date) && <button className="link-btn danger" onClick={() => onCancel(e)}>Cancelar evento</button>}
                 </div>
               </div>
@@ -2124,8 +2202,8 @@ function WithdrawEventModal({ modal, setModal, onClose, onSubmit }) {
 function ReturnEventModal({ modal, setModal, onClose, onSubmit }) {
   const setLine = (i, v) => setModal(p => ({ ...p, lines: p.lines.map((l, j) => (j === i ? { ...l, qty_returned: v } : l)) }));
   return (
-    <Modal title="Registrar regreso del evento" onClose={onClose} onSubmit={onSubmit} submitLabel="Confirmar regreso">
-      <p className="muted small">Indicá cuánto volvió de cada elemento. Lo que vuelve se suma al Depósito Rosario.</p>
+    <Modal title={modal.realize ? `Marcar como realizado · ${modal.event?.event_name || ''}` : 'Registrar regreso del evento'} onClose={onClose} onSubmit={onSubmit} submitLabel={modal.realize ? 'Confirmar: se realizó' : 'Confirmar regreso'}>
+      <p className="muted small">Indicá cuánto volvió de cada elemento. Lo que vuelve se suma al Depósito Rosario y el evento queda como realizado.</p>
       <div className="send-lines">
         {modal.lines.map((l, i) => (
           <div key={l.id} className="send-line">
