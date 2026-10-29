@@ -1,0 +1,154 @@
+/* Ronda 2: selector de materiales, errores dentro de ventanas, menú de acciones, tarjetas en pantallas angostas */
+
+/* ----- Botones que antes eran div ----- */
+button.stat { font: inherit; text-align: left; width: 100%; cursor: pointer; display: block; }
+button.stat:focus-visible, button.notice-banner:focus-visible, .picker input:focus-visible { outline: 3px solid var(--blue, #3d5afe); outline-offset: 2px; }
+button.notice-banner { font: inherit; text-align: left; width: 100%; display: block; cursor: pointer; }
+
+/* ----- Las ventanas quedan por encima del menú lateral (también en celular) ----- */
+.modal-overlay { z-index: 50; }
+
+/* ----- Error dentro de la ventana abierta ----- */
+.modal-error { position: sticky; top: 0; z-index: 3; margin: 0 0 12px; }
+.modal { overscroll-behavior: contain; }
+
+/* ----- Selector de material ----- */
+.picker { position: relative; min-width: 0; }
+.picker-box { position: relative; }
+.picker-box input { width: 100%; padding-right: 34px; }
+.picker-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; font-size: 20px; line-height: 1; cursor: pointer; color: #5b6478; padding: 4px 8px; }
+.picker-req { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; padding: 0; }
+.picker-list { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px; list-style: none; background: #fff; border: 2px solid var(--ink, #12183a); border-radius: 12px; box-shadow: 4px 4px 0 var(--ink, #12183a); max-height: 280px; overflow-y: auto; }
+.picker-list li { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.picker-list li.hi { background: #eef1ff; }
+.picker-list li.sel { font-weight: 700; }
+.picker-list li.zero { opacity: .55; cursor: not-allowed; }
+.picker-list li.empty { cursor: default; color: #5b6478; justify-content: flex-start; }
+.picker-list li.foot { justify-content: center; border-top: 1px solid var(--line, #dde2f5); margin-top: 4px; }
+.picker-list .opt-name { min-width: 0; overflow-wrap: anywhere; }
+.picker-list .opt-name small { display: block; color: #5b6478; font-weight: 400; font-size: 12px; }
+.picker-list .opt-qty { white-space: nowrap; font-size: 13px; color: #3d4b57; font-weight: 600; }
+.locked-line { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: #f3f5ff; border-radius: 10px; }
+.locked-line small { color: #5b6478; }
+
+/* ----- Formularios ----- */
+.field-help { display: block; margin-top: 4px; color: #5b6478; font-weight: 400; font-size: 12.5px; }
+.exception-box { margin: 12px 0 4px; padding: 10px 12px; border: 2px dashed #e0a100; background: #fff8e6; border-radius: 12px; display: grid; gap: 8px; }
+.check-inline, .check-filter { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.check-inline input, .check-filter input { width: 18px; height: 18px; flex: none; }
+.check-filter { align-self: end; padding-bottom: 8px; }
+.adjust-facts { margin: 4px 0 12px; }
+.forgot-link { align-self: flex-start; margin-top: 4px; }
+
+/* ----- Chips nuevos ----- */
+.chip.excepcional { background: #fff2d9; color: #8a4b00; border: 1px solid #e0a100; }
+.chip.pendiente { background: #ffe7e7; color: #a11b1b; }
+.chip.visto { background: #e6f4ea; color: #14602b; }
+
+/* ----- Menú de acciones «⋯» ----- */
+.row-menu { position: relative; display: inline-block; }
+.menu-btn { border: 2px solid var(--ink, #12183a); background: #fff; border-radius: 10px; width: 44px; height: 40px; font-size: 22px; line-height: 1; cursor: pointer; }
+.menu-btn:hover { background: var(--accent, #ff4fa0); }
+.menu-btn:focus-visible { outline: 3px solid var(--blue, #3d5afe); outline-offset: 2px; }
+.menu-list { position: absolute; right: 0; top: calc(100% + 4px); z-index: 25; min-width: 170px; display: flex; flex-direction: column; background: #fff; border: 2px solid var(--ink, #12183a); border-radius: 12px; box-shadow: 4px 4px 0 var(--ink, #12183a); padding: 4px; }
+.menu-list button { border: 0; background: transparent; text-align: left; padding: 10px 12px; border-radius: 8px; cursor: pointer; font: inherit; }
+.menu-list button:hover, .menu-list button:focus-visible { background: #eef1ff; }
+.menu-list button.danger { color: #a11b1b; }
+
+/* ----- Tablas que pasan a tarjetas en pantallas angostas ----- */
+@media (max-width: 640px) {
+  table.stack-table, table.stack-table tbody, table.stack-table tr, table.stack-table td { display: block; width: 100%; }
+  table.stack-table thead { position: absolute; left: -9999px; }
+  table.stack-table tr { border: 2px solid var(--line, #dde2f5); border-radius: 14px; padding: 10px 12px; margin-bottom: 12px; background: #fff; }
+  table.stack-table td { border: 0; padding: 4px 0; display: flex; justify-content: space-between; gap: 12px; text-align: right; }
+  table.stack-table td::before { content: attr(data-label); font-weight: 600; color: #5b6478; text-align: left; flex: none; max-width: 45%; }
+  table.stack-table td.cell-main { display: block; text-align: left; font-size: 1.05em; padding-bottom: 6px; }
+  table.stack-table td.cell-main::before { content: none; }
+  table.stack-table td.photo-col { display: block; text-align: left; }
+  table.stack-table td.photo-col:empty { display: none; }
+  table.stack-table td.actions-col { justify-content: flex-end; flex-wrap: wrap; }
+  table.stack-table td.actions-col::before { content: none; }
+  table.stack-table td:not([data-label]):not(.cell-main):not(.photo-col):not(.actions-col)::before { content: none; }
+  table.stack-table td[colspan] { display: block; text-align: left; }
+  table.stack-table td[colspan]::before { content: none; }
+  table.stack-table ul.ship-lines { text-align: left; }
+  .filters-row { flex-direction: column; align-items: stretch; }
+  .picker-list { max-height: 220px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal, .modal-overlay { animation: none !important; }
+}
+
+/* ================= Ronda 3 (auditoría de uso) ================= */
+
+/* ----- Menú ordenado por tarea ----- */
+.nav-section { margin: 14px 0 4px; padding: 0 14px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .72; font-weight: 700; }
+.nav-rail .nav-section { padding: 0; margin: 10px 8px 2px; height: 1px; background: rgba(255,255,255,.28); }
+.nav-rail .nav-section span { display: none; }
+
+/* ----- Botón + Nuevo ----- */
+.topbar-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.new-menu-btn { font: inherit; cursor: pointer; }
+.row-menu .menu-list.menu-left { right: auto; left: 0; }
+.menu-list button[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* ----- Selector segmentado (Todos / Pendientes, Un depósito / Vista general) ----- */
+.seg { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px; border: 2px solid var(--ink, #12183a); border-radius: 14px; background: #fff; margin-bottom: 4px; }
+.seg button { border: 0; background: transparent; font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 10px; cursor: pointer; }
+.seg button:hover { background: #eef1ff; }
+.seg button.on { background: var(--ink, #12183a); color: #fff; }
+.seg button:focus-visible { outline: 3px solid var(--blue, #3d5afe); outline-offset: 2px; }
+.inline-label { margin-top: 10px; }
+
+/* ----- Encabezados con acciones ----- */
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.name-link { border: 0; background: transparent; padding: 0; font: inherit; text-align: left; cursor: pointer; color: inherit; text-decoration: underline; text-decoration-color: rgba(18,24,58,.3); text-underline-offset: 3px; }
+.name-link:hover { text-decoration-color: currentColor; }
+.name-link:focus-visible { outline: 3px solid var(--blue, #3d5afe); outline-offset: 2px; }
+tr.group-row td { background: #eef1ff; border-top: 2px solid var(--line, #dde2f5); font-size: 14px; }
+.dupes-box { margin: 10px 0 14px; padding: 10px 14px; border: 2px dashed #e0a100; background: #fff8e6; border-radius: 12px; }
+.dupes-box summary { cursor: pointer; font-weight: 700; }
+.dupes-box ul { margin: 8px 0 0; padding-left: 20px; }
+
+/* ----- Ventanas anchas (conteo, importación, ficha) ----- */
+.modal.modal-wide { width: min(940px, 100%); }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.count-tools { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin: 12px 0 8px; }
+.count-table { width: 100%; border-collapse: collapse; }
+.count-table th, .count-table td { padding: 6px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--line, #dde2f5); }
+.count-table td small { display: block; color: #5b6478; font-size: 12px; }
+.count-table input[type=number] { width: 100px; }
+.count-table tr.row-bad td { background: #ffecec; }
+.ok { color: #14602b; font-weight: 600; }
+.import-steps { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 8px; }
+.danger-btn, .secondary-btn.danger-btn { color: #a11b1b; border-color: #a11b1b; background: #fff; }
+
+/* ----- Ficha del material ----- */
+.sheet-photos { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 10px; }
+.sheet-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 10px 0 6px; }
+.sheet-tiles > div { border: 2px solid var(--ink, #12183a); border-radius: 14px; padding: 10px 12px; background: #fff; display: grid; gap: 2px; }
+.sheet-tiles strong { font-size: 28px; line-height: 1; }
+.sheet-tiles span { color: #4a5380; font-size: 13px; }
+
+/* ----- Vista general ----- */
+.overview-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; margin-top: 10px; }
+.overview-card { text-align: left; font: inherit; cursor: pointer; display: grid; gap: 4px; padding: 12px 14px; border: 2px solid var(--ink, #12183a); border-radius: 14px; background: #fff; box-shadow: 3px 3px 0 var(--ink, #12183a); }
+.overview-card:hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--ink, #12183a); }
+.overview-card:focus-visible { outline: 3px solid var(--blue, #3d5afe); outline-offset: 2px; }
+.overview-card strong { font-size: 15px; }
+.overview-card small { color: #5b6478; }
+table.matrix { width: 100%; border-collapse: collapse; }
+table.matrix th, table.matrix td { padding: 6px 10px; border-bottom: 1px solid var(--line, #dde2f5); text-align: right; }
+table.matrix th:first-child, table.matrix td:first-child { text-align: left; position: sticky; left: 0; background: #fff; min-width: 190px; }
+table.matrix td small { display: block; color: #5b6478; font-size: 12px; }
+
+/* ----- Línea con costo opcional ----- */
+.send-line.has-cost { grid-template-columns: minmax(0, 1fr) 100px 140px auto; }
+
+@media (max-width: 700px) {
+  .send-line.has-cost { grid-template-columns: 1fr 90px; }
+  .send-line.has-cost input[placeholder^="Costo"] { grid-column: 1 / -1; }
+  .sheet-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .topbar-actions { width: 100%; }
+}
