@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { UiCtx, Modal, MaterialPicker, useScrollLock, norm, compressImage, downloadCsv, parseCsv } from './ui';
+import { HelpModal } from './help';
 import './styles.css';
 import './styles-extra.css';
 import './styles-pro.css';
@@ -867,6 +868,26 @@ export default function App() {
     if (k === 'recepcion' && !isPunto) { setShipFilter('pendientes'); setTab('movimientos'); } else setTab(k);
     setError(''); setNotice('');
   };
+  // Botones de la ayuda «¿Cómo hago…?»: abren el mismo formulario que el menú «+ Nuevo» o llevan a la pantalla
+  function runHelpAction(a) {
+    setError(''); setNotice('');
+    if (a.startsWith('goto:')) {
+      const k = a.slice(5);
+      setModal(null);
+      if (k === 'pendientes') { setShipFilter('pendientes'); setTab('movimientos'); } else if (k === 'movimientos') { setShipFilter('todos'); setTab('movimientos'); } else goTab(k);
+      return;
+    }
+    if (a === 'restock') { setRestock(emptyRestock()); setModal({ type: 'restock' }); }
+    else if (a === 'withdrawal') { setWithdrawal(emptyWithdrawal()); setModal({ type: 'withdrawal' }); }
+    else if (a === 'send') openSend(defaultOrigin);
+    else if (a === 'send-own') openSend(myOwnDest?.id || '');
+    else if (a === 'event') setModal(emptyEvent());
+    else if (a === 'item') { setEditingItem(null); setForm(emptyItem); setModal({ type: 'item' }); }
+    else if (a === 'count') openCount('');
+    else if (a === 'count-own') openCount(myOwnDest?.id || '');
+    else if (a === 'import') setModal({ type: 'import' });
+    else setModal(null);
+  }
 
   const titles = { dashboard: 'Dashboard', stock: 'Materiales', depositos: 'Depósitos y puntos', mideposito: 'Mi depósito', recepcion: 'Por recibir', ingresos: 'Ingresos', retiros: 'Retiros', movimientos: 'Envíos', eventos: 'Eventos', historial: 'Historial', usuarios: 'Usuarios' };
   const helps = {
@@ -922,6 +943,7 @@ export default function App() {
             {helps[tab] && <p className="screen-help">{helps[tab]}</p>}
           </div>
           <div className="topbar-actions">
+            <button type="button" className="secondary-btn help-btn" onClick={() => { setError(''); setNotice(''); setModal({ type: 'help' }); }} aria-label="Ayuda: ¿cómo hago…?"><span className="help-q" aria-hidden="true">?</span>¿Cómo hago…?</button>
             {isStaff && (
               <RowMenu label="+ Nuevo ▾" btnClass="primary-btn new-menu-btn" ariaLabel="Registrar un movimiento nuevo" align="right">
                 <button type="button" role="menuitem" onClick={() => { setError(''); setNotice(''); setRestock(emptyRestock()); setModal({ type: 'restock' }); }}>Ingreso de mercadería</button>
@@ -995,6 +1017,7 @@ export default function App() {
       {modal?.type === 'photos' && <PhotoViewer item={modal.item} onClose={() => setModal(null)} />}
       {modal?.type === 'item' && <ItemModal categories={categories} form={form} setForm={setForm} editing={Boolean(editingItem)} onClose={() => setModal(null)} onSubmit={saveItem} />}
       {modal?.type === 'count' && <CountModal modal={modal} setModal={setModal} items={items} destStock={destStock} destinations={destinations} reserved={reserved} canPick={!isPunto} onClose={() => setModal(null)} onSubmit={saveCount} />}
+      {modal?.type === 'help' && <HelpModal tab={tab} role={role} isPunto={isPunto} canOperate={isStaff || isPunto} canSendOwn={!!(isPunto && myOwnDest?.supplies_dealers)} onAction={runHelpAction} onClose={() => setModal(null)} />}
       {modal?.type === 'import' && <ImportModal categories={categories} destinations={destinations} items={items} onClose={() => setModal(null)} onSubmit={saveImport} />}
       {modal?.type === 'sheet' && itemById[modal.item_id] && (
         <ItemSheet item={itemById[modal.item_id]} reserved={reserved} destStock={destStock} destinations={destinations} isStaff={isStaff}
