@@ -203,3 +203,6 @@ table.matrix td small { display: block; color: #5b6478; font-size: 12px; }
   .help-btn { padding-left: 10px; padding-right: 10px; }
   .help-title { font-size: 14px; }
 }
+
+/* Materiales: subtítulo chico en el encabezado de «Otros» */
+.th-sub { display: block; font-size: 10px; font-weight: 600; text-transform: none; letter-spacing: 0; opacity: .75; }
