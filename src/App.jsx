@@ -778,6 +778,16 @@ export default function App() {
     destStock.filter(r => depotIds.has(r.destination_id)).forEach(r => { acc[r.item_id] = (acc[r.item_id] || 0) + r.qty; });
     return acc;
   }, [destStock, depotIds]);
+  // Para la tabla de Materiales: stock del Depósito Santa Fe aparte y «Otros» (Cañada + concesionarios)
+  const sfDepot = useMemo(() => destinations.find(d => d.is_depot && norm(d.name).includes('santa fe')) || null, [destinations]);
+  const stockBySite = useMemo(() => {
+    const sf = {}, others = {};
+    destStock.forEach(r => {
+      const acc = sfDepot && r.destination_id === sfDepot.id ? sf : others;
+      acc[r.item_id] = (acc[r.item_id] || 0) + (r.qty || 0);
+    });
+    return { sf, others };
+  }, [destStock, sfDepot]);
 
   const linesByShipment = useMemo(() => {
     const acc = {};
@@ -970,7 +980,7 @@ export default function App() {
           tab === 'dashboard' ? <Dashboard eventItems={eventItems} items={items} centralAlerts={centralAlerts} pointAlerts={pointAlerts} inTransit={inTransit} diffs={diffShipments} linesByShipment={linesByShipment} canResolve={isStaff} onResolve={openResolve} events={events} history={history} reviewAdj={reviewAdj} onAck={ackMovement} busy={busy} onGo={goTab} onRealize={realizeEvent}
             canOperate={isStaff} availOf={(id) => Math.max(0, (itemById[id]?.stock_nucleo || 0) - (reserved[id] || 0))} onBuy={buyFor} onSendFor={sendFor}
             onSetMin={(p) => setModal({ type: 'pmin', destination_id: p.destination_id, item_id: p.item_id, name: p.item_name, min: p.min_qty })} /> :
-          tab === 'stock' ? <StockTable items={filteredItems} totalItems={items.length} categories={categories} inDepots={inDepots} reserved={reserved} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter} photoFilter={photoFilter} setPhotoFilter={setPhotoFilter} allItems={items}
+          tab === 'stock' ? <StockTable items={filteredItems} totalItems={items.length} categories={categories} inDepots={inDepots} stockBySite={stockBySite} reserved={reserved} isStaff={isStaff} query={query} setQuery={setQuery} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} brandFilter={brandFilter} setBrandFilter={setBrandFilter} photoFilter={photoFilter} setPhotoFilter={setPhotoFilter} allItems={items}
               onOpen={(item) => setModal({ type: 'sheet', item_id: item.id })} onCount={() => openCount('')} onImport={() => { setError(''); setNotice(''); setModal({ type: 'import' }); }}
               onEdit={(item) => { setEditingItem(item.id); setForm({ ...emptyItem, ...item, brand: item.brand || 'Genérico', occasion: item.occasion || '', photoFiles: [] }); setError(''); setNotice(''); setModal({ type: 'item' }); }}
               onAdjust={(item) => { setError(''); setNotice(''); setModal({ type: 'adjust', item_id: item.id, name: item.name, destination_id: null, current: item.stock_nucleo, new_qty: item.stock_nucleo, reserved: reserved[item.id] || 0, reason: '', place: ROSARIO, isRosario: true }); }}
@@ -1293,7 +1303,7 @@ function RowMenu({ children, label = '⋯', btnClass = 'menu-btn', ariaLabel = '
   );
 }
 
-function StockTable({ items: filtered, allItems, categories, inDepots, reserved, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, photoFilter, setPhotoFilter, onOpen, onEdit, onAdjust, onDelete, onPhotos, onCount, onImport }) {
+function StockTable({ items: filtered, allItems, categories, inDepots, stockBySite, reserved, isStaff, query, setQuery, categoryFilter, setCategoryFilter, brandFilter, setBrandFilter, photoFilter, setPhotoFilter, onOpen, onEdit, onAdjust, onDelete, onPhotos, onCount, onImport }) {
   const PAGE = 25;
   const [page, setPage] = useState(0);
   const [showAll, setShowAll] = useState(false);
@@ -1362,7 +1372,7 @@ function StockTable({ items: filtered, allItems, categories, inDepots, reserved,
       {searching && (<>
       <p className="muted small">{filtered.length} material(es){filtered.length !== allItems.length ? ` de ${allItems.length}` : ''} · tocá el nombre para ver la ficha con el stock en cada depósito</p>
       <table className="stack-table">
-        <thead><tr><th></th><th>Material</th><th>Categoría</th><th>Marca</th><th>Depósito Rosario</th><th>En depósitos y puntos</th>{isStaff && <th></th>}</tr></thead>
+        <thead><tr><th></th><th>Material</th><th>Categoría</th><th>Marca</th><th>Depósito Rosario</th><th>Depósito Santa Fe</th><th title="Cañada de Gómez + lo enviado a concesionarios">Otros<small className="th-sub">Cañada + concesionarios</small></th>{isStaff && <th></th>}</tr></thead>
         <tbody>
           {items.map((i, idx) => {
             const low = Number(i.reorder_nucleo) > 0 && Number(i.stock_nucleo) <= Number(i.reorder_nucleo);
@@ -1372,7 +1382,7 @@ function StockTable({ items: filtered, allItems, categories, inDepots, reserved,
             const newGroup = grp.length > 1 && (!prev || norm(prev.name.trim()) !== k);
             return (
               <React.Fragment key={i.id}>
-                {newGroup && <tr className="group-row"><td colSpan="7"><strong>{i.name}</strong> · {grp.length} marcas · {grp.reduce((a, x) => a + (x.stock_nucleo || 0), 0)} u. en Rosario</td></tr>}
+                {newGroup && <tr className="group-row"><td colSpan="8"><strong>{i.name}</strong> · {grp.length} marcas · {grp.reduce((a, x) => a + (x.stock_nucleo || 0), 0)} u. en Rosario</td></tr>}
               <tr>
                 <td className="photo-col">{i.photo_urls?.length ? (
                   <button type="button" className="thumb-btn" onClick={() => onPhotos(i)} title="Ver fotos">
@@ -1382,7 +1392,8 @@ function StockTable({ items: filtered, allItems, categories, inDepots, reserved,
                 <td className="cell-main"><button type="button" className="name-link" onClick={() => onOpen(i)}><strong>{i.name}</strong></button></td>
                 <td data-label="Categoría">{i.category}</td><td data-label="Marca">{i.brand}</td>
                 <td data-label="Rosario" className={low ? 'warn' : ''}>{i.stock_nucleo || 0}{reserved?.[i.id] > 0 && <small>reservado {reserved[i.id]} · disponible {Math.max(0, (i.stock_nucleo || 0) - reserved[i.id])}</small>}{Number(i.reorder_nucleo) > 0 && <small>mín. {i.reorder_nucleo}</small>}</td>
-                <td data-label="En depósitos">{inDepots[i.id] || 0}</td>
+                <td data-label="Santa Fe">{stockBySite?.sf[i.id] || 0}</td>
+                <td data-label="Cañada y conces.">{stockBySite?.others[i.id] || 0}</td>
                 {isStaff && <td className="actions-col">
                   <RowMenu>
                     <button type="button" role="menuitem" onClick={() => onOpen(i)}>Ver ficha</button>
@@ -1395,7 +1406,7 @@ function StockTable({ items: filtered, allItems, categories, inDepots, reserved,
               </React.Fragment>
             );
           })}
-          {!items.length && <tr><td colSpan="7" className="muted">No hay materiales con esos filtros</td></tr>}
+          {!items.length && <tr><td colSpan="8" className="muted">No hay materiales con esos filtros</td></tr>}
         </tbody>
       </table>
       <p className="muted small photo-legend">❓ = la foto no está disponible (el archivo no se encuentra en Drive o no se puede abrir). Sin ícono = ese material no tiene foto cargada. Podés reemplazarla con «Editar».</p>
