@@ -274,8 +274,8 @@ export default function App() {
 
     if (profile?.role !== 'punto') {
       const [rs, wd, ev, evi, rsv, rev, us, cst] = await Promise.all([
-        q(supabase.from('restocks').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
-        q(supabase.from('withdrawals').select('*, items(name)').order('created_at', { ascending: false }).limit(200)),
+        q(supabase.from('restocks').select('*, items(name, brand)').order('created_at', { ascending: false }).limit(200)),
+        q(supabase.from('withdrawals').select('*, items(name, brand)').order('created_at', { ascending: false }).limit(200)),
         q(supabase.from('events').select('*').order('event_date', { ascending: false })),
         q(supabase.from('event_items').select('*, items(name), events(event_name)').order('created_at', { ascending: false })),
         q(supabase.rpc('reserved_by_item')),
@@ -828,8 +828,8 @@ export default function App() {
 
   const history = useMemo(() => {
     const rows = [];
-    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a ' + ROSARIO, item_id: r.item_id, item: r.items?.name, brand: '', place: ROSARIO, qty: r.qty, detalle: [SOURCE_LABELS[r.source] || r.source, r.cost ? fmtMoney(r.cost) : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
-    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: MOVE_LABELS.retiro, item_id: w.item_id, item: w.items?.name, brand: '', place: ROSARIO, qty: w.qty, detalle: [reasonLabel(w.reason_type), w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
+    restocks.forEach(r => rows.push({ id: 'r' + r.id, at: r.created_at, tipo: 'Ingreso a ' + ROSARIO, item_id: r.item_id, item: r.items?.name, brand: r.items?.brand || '', place: ROSARIO, qty: r.qty, detalle: [SOURCE_LABELS[r.source] || r.source, r.cost ? fmtMoney(r.cost) : null, r.notes].filter(Boolean).join(' · '), quien: r.person }));
+    withdrawals.forEach(w => rows.push({ id: 'w' + w.id, at: w.created_at, tipo: MOVE_LABELS.retiro, item_id: w.item_id, item: w.items?.name, brand: w.items?.brand || '', place: ROSARIO, qty: w.qty, detalle: [reasonLabel(w.reason_type), w.reason_detail, w.recipient_last_name, w.vehicle_plate].filter(Boolean).join(' · '), quien: w.person }));
     movements.forEach(m => {
       const base = { brand: m.items?.brand || '', place: m.origen || '', placeId: m.origen_id || m.destino_id || null, destId: m.destino_id || null, originId: m.origen_id || null, destName: m.destination || destById[m.destino_id]?.name || '' };
       if (m.type === 'stock_inicial' || m.type === 'compra') {
@@ -1467,7 +1467,7 @@ function DepositoView({ viewToggle, onCount, sentList, madeList, linesByShipment
               {sentList.map(sh => (
                 <tr key={sh.id}>
                   <td className="cell-main">{fmtDate(sh.created_at)}{sh.origin_name && <small>desde {sh.origin_name}</small>}</td>
-                  <td data-label="Materiales"><ul className="ship-lines">{(linesByShipment[sh.id] || []).map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul></td>
+                  <td data-label="Materiales"><ul className="ship-lines">{(linesByShipment[sh.id] || []).map(l => <li key={l.id}><span className="tick">•</span><span>{withBrand(l.items)} × {l.qty}</span></li>)}</ul></td>
                   <td data-label="Recibe">{sh.recipient_name || '—'}</td><td data-label="Enviado por">{sh.created_by_name}</td>
                 </tr>
               ))}
@@ -1486,7 +1486,7 @@ function DepositoView({ viewToggle, onCount, sentList, madeList, linesByShipment
                 <tr key={sh.id}>
                   <td className="cell-main">{fmtDate(sh.created_at)}{sh.exception_reason && <small><span className="chip excepcional" title={sh.exception_reason}>Excepcional</span></small>}</td>
                   <td data-label="Destino">{sh.destination_name}</td>
-                  <td data-label="Materiales"><ul className="ship-lines">{(linesByShipment[sh.id] || []).map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul></td>
+                  <td data-label="Materiales"><ul className="ship-lines">{(linesByShipment[sh.id] || []).map(l => <li key={l.id}><span className="tick">•</span><span>{withBrand(l.items)} × {l.qty}</span></li>)}</ul></td>
                   <td data-label="Recibe">{sh.recipient_name || '—'}</td><td data-label="Enviado por">{sh.created_by_name}</td>
                 </tr>
               ))}
@@ -1671,7 +1671,7 @@ function RestockTable({ rows }) {
           return (
             <tr key={key}>
               <td className="cell-main">{fmtDate(r.created_at)}</td>
-              <td data-label="Materiales">{lines.length > 1 ? <ul className="ship-lines">{lines.map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul> : r.items?.name}</td>
+              <td data-label="Materiales">{lines.length > 1 ? <ul className="ship-lines">{lines.map(l => <li key={l.id}><span className="tick">•</span><span>{withBrand(l.items)} × {l.qty}</span></li>)}</ul> : withBrand(r.items)}</td>
               <td data-label="Unidades">{lines.reduce((a, l) => a + l.qty, 0)}</td>
               <td data-label="Origen">{SOURCE_LABELS[r.source] || r.source}</td>
               <td data-label="Costo">{cost > 0 ? fmtMoney(cost) : '—'}</td>
@@ -1706,7 +1706,7 @@ function WithdrawalTable({ rows }) {
         <tbody>{groups.map(({ key, first: r, lines }) => (
           <tr key={key}>
             <td className="cell-main">{fmtDate(r.created_at)}</td>
-            <td data-label="Materiales">{lines.length > 1 ? <ul className="ship-lines">{lines.map(l => <li key={l.id}><span className="tick">•</span><span>{l.items?.name} × {l.qty}</span></li>)}</ul> : r.items?.name}</td>
+            <td data-label="Materiales">{lines.length > 1 ? <ul className="ship-lines">{lines.map(l => <li key={l.id}><span className="tick">•</span><span>{withBrand(l.items)} × {l.qty}</span></li>)}</ul> : withBrand(r.items)}</td>
             <td data-label="Unidades">{lines.reduce((a, l) => a + l.qty, 0)}</td>
             <td data-label="Motivo">{reasonLabel(r.reason_type)}</td><td data-label="Detalle">{r.reason_detail}</td>
             <td data-label="Cliente">{r.recipient_last_name || '—'}</td><td data-label="Patente">{r.vehicle_plate || '—'}</td><td data-label="Registrado por">{r.person}</td>
@@ -2047,6 +2047,8 @@ function ItemModal({ categories, form, setForm, editing, onClose, onSubmit }) {
   );
 }
 const itemLabel = (i) => `${i.name}${i.brand && i.brand !== 'Genérico' ? ` · ${i.brand}` : ''}`;
+/* «Gorra · RAM»: nombre + marca (sin Genérico ni repetir la marca si ya está en el nombre) */
+const withBrand = (it) => { const n = it?.name || ''; const b = it?.brand; return b && b !== 'Genérico' && !n.toLowerCase().includes(b.toLowerCase()) ? `${n} · ${b}` : n; };
 const itemSearch = (i) => `${i.name} ${i.brand || ''} ${i.sku || ''} ${i.category || ''}`;
 const nameHasBrand = (name) => BRANDS.filter(b => b !== 'Neostar').find(b => new RegExp(`(^|[^a-záéíóúñ])${b}([^a-záéíóúñ]|$)`, 'i').test(String(name || '')));
 
