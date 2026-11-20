@@ -2051,7 +2051,7 @@ const itemSearch = (i) => `${i.name} ${i.brand || ''} ${i.sku || ''} ${i.categor
 const nameHasBrand = (name) => BRANDS.filter(b => b !== 'Neostar').find(b => new RegExp(`(^|[^a-záéíóúñ])${b}([^a-záéíóúñ]|$)`, 'i').test(String(name || '')));
 
 /* Renglones «material + cantidad» con buscador. options: [{ id, label, search, avail?, note? }] */
-function LinesEditor({ lines, onChange, options, rightLabel = 'Disponible', hideZero = true, addLabel = '+ Agregar otro material', withCost = false }) {
+function LinesEditor({ lines, onChange, options, rightLabel = 'Disponible', hideZero = true, addLabel = '+ Agregar otro material', withCost = false, capQty = true }) {
   const byId = useMemo(() => Object.fromEntries(options.map(o => [o.id, o])), [options]);
   const set = (i, patch) => onChange(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)));
   const del = (i) => onChange(lines.length > 1 ? lines.filter((_, j) => j !== i) : lines);
@@ -2061,7 +2061,7 @@ function LinesEditor({ lines, onChange, options, rightLabel = 'Disponible', hide
         {lines.map((l, i) => {
           const o = byId[l.item_id];
           const excl = new Set(lines.filter((_, j) => j !== i).map(x => x.item_id).filter(Boolean));
-          const max = o?.avail != null ? Math.max(o.avail, 0) : undefined;
+          const max = capQty && o?.avail != null ? Math.max(o.avail, 0) : undefined;
           return (
             <div key={i} className={`send-line${withCost ? ' has-cost' : ''}`}>
               {l.locked
@@ -2090,7 +2090,7 @@ function RestockModal({ restock, setRestock, items, onClose, onSubmit }) {
         <label>Notas<input value={restock.notes} onChange={e => set('notes', e.target.value)} placeholder="Remito, proveedor, etc." /></label>
       </div>
       <h3 className="sub">Materiales que entraron</h3>
-      <LinesEditor lines={restock.lines} onChange={lines => set('lines', lines)} options={options} rightLabel="En Rosario" hideZero={false} withCost />
+      <LinesEditor lines={restock.lines} onChange={lines => set('lines', lines)} options={options} rightLabel="En Rosario" hideZero={false} withCost capQty={false} />
       <p className="muted small">Cargá todo lo que figura en el remito de una vez. El costo de cada línea es opcional (lo que costó esa línea completa).</p>
       <p className="muted small">¿Es una devolución de un depósito o concesionario? No la cargues acá: usá «Devolver a Rosario» en Depósitos y puntos, así también se descuenta de donde vuelve.</p>
     </Modal>
